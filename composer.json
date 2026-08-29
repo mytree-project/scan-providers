@@ -1,0 +1,46 @@
+{
+  "name": "mytree/scan-providers",
+  "description": "Framework-independent PHP providers for discovering, resolving and downloading genealogical scans for MyTree.",
+  "type": "library",
+  "keywords": [
+    "genealogy",
+    "scans",
+    "skanoteka",
+    "mytree"
+  ],
+  "homepage": "https://github.com/mytree-project/scan-providers",
+  "license": "Apache-2.0",
+  "authors": [
+    {
+      "name": "saulgajda",
+      "homepage": "https://github.com/mytree-project",
+      "role": "Developer"
+    }
+  ],
+  "support": {
+    "issues": "https://github.com/mytree-project/scan-providers/issues",
+    "source": "https://github.com/mytree-project/scan-providers"
+  },
+  "require": {
+    "php": "^8.2"
+  },
+  "autoload": {
+    "psr-4": {
+      "MyTree\\ScanProviders\\": "src/"
+    }
+  },
+  "bin": [
+    "bin/mytree-scan"
+  ],
+  "scripts": {
+    "test": "phpunit"
+  },
+  "require-dev": {
+    "phpunit/phpunit": "^11.5 || ^12.5 || ^13.0"
+  },
+  "autoload-dev": {
+    "psr-4": {
+      "MyTree\\ScanProviders\\Tests\\": "tests/"
+    }
+  }
+}

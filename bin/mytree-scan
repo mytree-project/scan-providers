@@ -1,0 +1,167 @@
+#!/usr/bin/env php
+<?php
+
+declare(strict_types=1);
+
+$root = dirname(__DIR__);
+if (is_file($root . '/vendor/autoload.php')) {
+    require $root . '/vendor/autoload.php';
+} else {
+    require $root . '/bootstrap.php';
+}
+
+use MyTree\ScanProviders\Application\DiscoverScans;
+use MyTree\ScanProviders\Application\DownloadScan;
+use MyTree\ScanProviders\Application\ResolveScan;
+use MyTree\ScanProviders\Domain\ResolveScanRequest;
+use MyTree\ScanProviders\Domain\ScanLocatorHints;
+use MyTree\ScanProviders\Domain\ScanResolutionStatus;
+use MyTree\ScanProviders\Domain\ScanResourceReference;
+use MyTree\ScanProviders\Infrastructure\LocalFilesystemScanAssetStorage;
+use MyTree\ScanProviders\Infrastructure\NativeHttpClient;
+use MyTree\ScanProviders\Provider\GenealodzySkanoteka\GenealodzySkanotekaProvider;
+use MyTree\ScanProviders\Registry\ScanProviderRegistry;
+
+function usage(int $exit = 0): never
+{
+    $text = <<<'TXT'
+MyTree Scan Providers
+
+Commands:
+  php bin/mytree-scan providers
+
+  php bin/mytree-scan discover \
+    --url="https://metryki.genealodzy.pl/metryki.php?..." \
+    [--format=table|json]
+
+  php bin/mytree-scan resolve \
+    --url="https://metryki.genealodzy.pl/metryki.php?..." \
+    --record-number=17 \
+    [--year=1853] [--record-type=birth] [--parish=Imbramowice]
+
+  php bin/mytree-scan download \
+    --url="https://metryki.genealodzy.pl/metryki.php?..." \
+    --record-number=17 \
+    --output=var/scans
+
+Common:
+  --timeout=60
+  --help
+TXT;
+    fwrite($exit === 0 ? STDOUT : STDERR, $text . PHP_EOL);
+    exit($exit);
+}
+
+/** @return array<string,string|bool> */
+function options(array $args): array
+{
+    $out = [];
+    foreach ($args as $arg) {
+        if (!str_starts_with($arg, '--')) {
+            continue;
+        }
+        $arg = substr($arg, 2);
+        if (str_contains($arg, '=')) {
+            [$key, $value] = explode('=', $arg, 2);
+            $out[$key] = $value;
+        } else {
+            $out[$arg] = true;
+        }
+    }
+    return $out;
+}
+
+function requiredOption(array $options, string $name): string
+{
+    $value = $options[$name] ?? null;
+    if (!is_string($value) || trim($value) === '') {
+        fwrite(STDERR, "Missing required option --$name\n");
+        usage(2);
+    }
+    return trim($value);
+}
+
+function jsonOutput(mixed $value): string
+{
+    return json_encode($value, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR) . PHP_EOL;
+}
+
+$command = $argv[1] ?? null;
+if ($command === null || in_array($command, ['--help', '-h', 'help'], true)) {
+    usage();
+}
+$opts = options(array_slice($argv, 2));
+if (isset($opts['help'])) {
+    usage();
+}
+
+$timeout = max(5, (int) ($opts['timeout'] ?? 60));
+$http = new NativeHttpClient(timeoutSeconds: $timeout);
+$registry = new ScanProviderRegistry([
+    new GenealodzySkanotekaProvider($http),
+]);
+
+try {
+    if ($command === 'providers') {
+        foreach ($registry->all() as $provider) {
+            fwrite(STDOUT, $provider->key() . PHP_EOL);
+        }
+        exit(0);
+    }
+
+    $resource = new ScanResourceReference(requiredOption($opts, 'url'));
+
+    if ($command === 'discover') {
+        $catalog = (new DiscoverScans($registry))->execute($resource);
+        $format = strtolower((string) ($opts['format'] ?? 'table'));
+        if ($format === 'json') {
+            fwrite(STDOUT, jsonOutput($catalog));
+            exit(0);
+        }
+        if ($format !== 'table') {
+            throw new InvalidArgumentException('Unsupported --format. Use table or json.');
+        }
+        fwrite(STDOUT, "FILENAME\tLOCATOR\tVIEWER URL\n");
+        foreach ($catalog->scans as $scan) {
+            $locator = $scan->locators[0] ?? null;
+            $locatorText = $locator === null
+                ? ''
+                : ($locator->from === null ? $locator->kind : $locator->from . ($locator->to !== $locator->from ? '-' . $locator->to : ''));
+            fwrite(STDOUT, $scan->remoteFilename . "\t" . $locatorText . "\t" . $scan->viewerUrl . PHP_EOL);
+        }
+        exit(0);
+    }
+
+    $hints = new ScanLocatorHints(
+        recordNumberRaw: isset($opts['record-number']) && is_string($opts['record-number']) ? $opts['record-number'] : null,
+        year: isset($opts['year']) ? (int) $opts['year'] : null,
+        recordType: isset($opts['record-type']) && is_string($opts['record-type']) ? $opts['record-type'] : null,
+        parishRaw: isset($opts['parish']) && is_string($opts['parish']) ? $opts['parish'] : null,
+        pageRaw: isset($opts['page']) && is_string($opts['page']) ? $opts['page'] : null,
+        scanNumberRaw: isset($opts['scan-number']) && is_string($opts['scan-number']) ? $opts['scan-number'] : null,
+        archiveSignatureRaw: isset($opts['archive-signature']) && is_string($opts['archive-signature']) ? $opts['archive-signature'] : null,
+    );
+    $resolution = (new ResolveScan($registry))->execute(new ResolveScanRequest($resource, $hints));
+
+    if ($command === 'resolve') {
+        fwrite(STDOUT, jsonOutput($resolution));
+        exit($resolution->status === ScanResolutionStatus::Resolved ? 0 : 3);
+    }
+
+    if ($command === 'download') {
+        if ($resolution->status !== ScanResolutionStatus::Resolved || $resolution->resolved === null) {
+            fwrite(STDERR, jsonOutput($resolution));
+            exit(3);
+        }
+        $storage = new LocalFilesystemScanAssetStorage(requiredOption($opts, 'output'));
+        $downloaded = (new DownloadScan($registry, $storage))->execute($resolution->resolved);
+        fwrite(STDOUT, jsonOutput($downloaded));
+        exit(0);
+    }
+
+    fwrite(STDERR, "Unknown command: $command\n");
+    usage(2);
+} catch (Throwable $exception) {
+    fwrite(STDERR, '[ERROR] ' . $exception->getMessage() . PHP_EOL);
+    exit(1);
+}
