@@ -1,0 +1,20 @@
+name: PR to Review
+
+on:
+  pull_request:
+    types:
+      - opened
+      - ready_for_review
+
+permissions: {}
+
+jobs:
+  move-linked-issue-to-review:
+    if: github.event.pull_request.draft == false
+    uses: mytree-project/mytree-project/.github/workflows/pr-to-review.yml@main
+    with:
+      repository: ${{ github.repository }}
+      pull_request_number: ${{ github.event.pull_request.number }}
+    secrets:
+      app_client_id: ${{ secrets.MYTREE_PROJECT_APP_CLIENT_ID }}
+      app_private_key: ${{ secrets.MYTREE_PROJECT_APP_PRIVATE_KEY }}
