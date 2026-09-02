@@ -9,12 +9,33 @@ on:
 permissions: {}
 
 jobs:
-  move-linked-issue-to-review:
+  dispatch-pr-to-review:
     if: github.event.pull_request.draft == false
-    uses: mytree-project/mytree-project/.github/workflows/pr-to-review.yml@main
-    with:
-      repository: ${{ github.repository }}
-      pull_request_number: ${{ github.event.pull_request.number }}
-    secrets:
-      app_client_id: ${{ secrets.MYTREE_PROJECT_APP_CLIENT_ID }}
-      app_private_key: ${{ secrets.MYTREE_PROJECT_APP_PRIVATE_KEY }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Create short-lived dispatch token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ secrets.MYTREE_PROJECT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.MYTREE_PROJECT_APP_PRIVATE_KEY }}
+          owner: mytree-project
+          repositories: mytree-project
+          permission-actions: write
+
+      - name: Dispatch central PR-to-Review workflow
+        uses: actions/github-script@v9
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: 'mytree-project',
+              repo: 'mytree-project',
+              workflow_id: 'pr-to-review.yml',
+              ref: 'main',
+              inputs: {
+                repository: '${{ github.repository }}',
+                pull_request_number: '${{ github.event.pull_request.number }}',
+              },
+            });
