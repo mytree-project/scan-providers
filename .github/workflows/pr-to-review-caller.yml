@@ -32,7 +32,7 @@ jobs:
             await github.rest.actions.createWorkflowDispatch({
               owner: 'mytree-project',
               repo: 'mytree-project',
-              workflow_id: 'pr-to-review.yml',
+              workflow_id: 'pr-to-review-dispatch.yml',
               ref: 'main',
               inputs: {
                 repository: '${{ github.repository }}',
