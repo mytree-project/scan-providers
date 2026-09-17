@@ -20,8 +20,6 @@ use MyTree\ScanProviders\Domain\ScanProvenance;
 use MyTree\ScanProviders\Domain\ScanResolution;
 use MyTree\ScanProviders\Domain\ScanResolutionStatus;
 use MyTree\ScanProviders\Domain\ScanResourceReference;
-use MyTree\ScanProviders\Exception\ScanCapabilityUnavailableException;
-use MyTree\ScanProviders\Exception\ScanProviderException;
 use MyTree\ScanProviders\Exception\UnexpectedProviderResponseException;
 use MyTree\ScanProviders\Infrastructure\SystemClock;
 
@@ -33,6 +31,9 @@ final class SzukajWArchiwachProvider implements ScanProviderInterface, ScanCatal
     /** @var array<string,ScanCatalog> */
     private array $catalogCache = [];
 
+    private readonly RetryingHttpFetcher $fetcher;
+    private readonly SzukajWArchiwachAssetDownloader $assetDownloader;
+
     public function __construct(
         private readonly HttpClientInterface $http,
         private readonly CatalogPageParser $parser = new CatalogPageParser(),
@@ -42,6 +43,7 @@ final class SzukajWArchiwachProvider implements ScanProviderInterface, ScanCatal
         private readonly int $retryBackoffMilliseconds = 500,
         private readonly int $requestPacingMilliseconds = 250,
         private readonly int $maxPages = 500,
+        ?SzukajWArchiwachAssetDownloader $assetDownloader = null,
     ) {
         if ($this->maxAttempts < 1 || $this->maxPages < 1) {
             throw new \InvalidArgumentException('Szukaj w Archiwach retry/page limits must be positive.');
@@ -49,6 +51,17 @@ final class SzukajWArchiwachProvider implements ScanProviderInterface, ScanCatal
         if ($this->retryBackoffMilliseconds < 0 || $this->requestPacingMilliseconds < 0) {
             throw new \InvalidArgumentException('Szukaj w Archiwach delays cannot be negative.');
         }
+
+        $this->fetcher = new RetryingHttpFetcher(
+            http: $this->http,
+            maxAttempts: $this->maxAttempts,
+            retryBackoffMilliseconds: $this->retryBackoffMilliseconds,
+        );
+        $this->assetDownloader = $assetDownloader ?? new SzukajWArchiwachAssetDownloader(
+            fetcher: $this->fetcher,
+            clock: $this->clock,
+            requestPacingMilliseconds: $this->requestPacingMilliseconds,
+        );
     }
 
     public function key(): string
@@ -146,7 +159,7 @@ final class SzukajWArchiwachProvider implements ScanProviderInterface, ScanCatal
                 remoteId: $entry['object_id'],
                 label: $entry['label'] !== '' ? $entry['label'] : 'Scan ' . $ordinal,
                 remoteFilename: '',
-                viewerUrl: $unitUrl,
+                viewerUrl: $this->objectViewerUrl($unitId, $entry['object_id']),
                 locators: [
                     new ScanLocator(ScanLocator::OPAQUE, 'scan:' . $ordinal),
                     new ScanLocator(ScanLocator::OPAQUE, 'object:' . $entry['object_id']),
@@ -213,46 +226,14 @@ final class SzukajWArchiwachProvider implements ScanProviderInterface, ScanCatal
 
     public function download(ResolvedScan $scan, ScanAssetStorageInterface $storage): DownloadedScan
     {
-        throw new ScanCapabilityUnavailableException(
-            'Szukaj w Archiwach raw asset download is not implemented by the ordinal-resolution step.',
-        );
+        return $this->assetDownloader->download($scan, $storage);
     }
 
     private function fetchPage(string $url): HttpResponse
     {
-        $lastTransportFailure = null;
-        for ($attempt = 1; $attempt <= $this->maxAttempts; ++$attempt) {
-            try {
-                $response = $this->http->get($url, [
-                    'Accept' => 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                ]);
-                $lastTransportFailure = null;
-            } catch (ScanProviderException $exception) {
-                $lastTransportFailure = $exception;
-                if ($attempt === $this->maxAttempts) {
-                    throw $exception;
-                }
-                $this->sleepMilliseconds($this->retryBackoffMilliseconds * $attempt);
-                continue;
-            }
-
-            if ($response->status >= 200 && $response->status < 300) {
-                return $response;
-            }
-
-            $retryable = $response->status === 429 || $response->status >= 500;
-            if (!$retryable || $attempt === $this->maxAttempts) {
-                throw new UnexpectedProviderResponseException(
-                    sprintf('Szukaj w Archiwach returned HTTP %d for %s.', $response->status, $url),
-                );
-            }
-
-            $this->sleepMilliseconds($this->retryBackoffMilliseconds * $attempt);
-        }
-
-        throw $lastTransportFailure ?? new UnexpectedProviderResponseException(
-            'Szukaj w Archiwach request failed without a response.',
-        );
+        return $this->fetcher->get($url, [
+            'Accept' => 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        ]);
     }
 
     private function unitId(ScanResourceReference $resource): ?string
@@ -262,7 +243,7 @@ final class SzukajWArchiwachProvider implements ScanProviderInterface, ScanCatal
         }
 
         $path = (string) parse_url($resource->url, PHP_URL_PATH);
-        if (!preg_match('~^/jednostka/-/jednostka/([1-9]\d*)/?$~', $path, $match)) {
+        if (!preg_match('~^/jednostka/-/jednostka/([1-9]\\d*)/?$~', $path, $match)) {
             return null;
         }
 
@@ -272,6 +253,11 @@ final class SzukajWArchiwachProvider implements ScanProviderInterface, ScanCatal
     private function canonicalUnitUrl(string $unitId): string
     {
         return 'https://www.szukajwarchiwach.gov.pl/jednostka/-/jednostka/' . $unitId;
+    }
+
+    private function objectViewerUrl(string $unitId, string $objectId): string
+    {
+        return $this->canonicalUnitUrl($unitId) . '/obiekty/' . $objectId;
     }
 
     private function assertUnitPageUrl(string $url, string $unitId): void
