@@ -9,9 +9,11 @@ use MyTree\ScanProviders\Application\DiscoverScans;
 use MyTree\ScanProviders\Domain\HttpResponse;
 use MyTree\ScanProviders\Domain\ResolveScanRequest;
 use MyTree\ScanProviders\Domain\ScanLocatorHints;
+use MyTree\ScanProviders\Domain\ScanResolution;
 use MyTree\ScanProviders\Domain\ScanResolutionStatus;
 use MyTree\ScanProviders\Domain\ScanResourceReference;
 use MyTree\ScanProviders\Exception\UnexpectedProviderResponseException;
+use MyTree\ScanProviders\Provider\SzukajWArchiwach\OrdinalScanResolver;
 use MyTree\ScanProviders\Provider\SzukajWArchiwach\SzukajWArchiwachProvider;
 use MyTree\ScanProviders\Registry\ScanProviderRegistry;
 use MyTree\ScanProviders\Tests\Support\FakeHttpClient;
@@ -115,16 +117,76 @@ final class SzukajWArchiwachProviderTest extends TestCase
         self::assertSame([self::MULTI_UNIT, self::MULTI_UNIT], $http->requests);
     }
 
-    public function testResolutionRemainsExplicitlyUnsupportedInCatalogStep(): void
+    public function testItResolvesDeepLinkOrdinalAgainstDiscoveredCatalog(): void
     {
-        $provider = $this->provider(new FakeHttpClient());
-        $resolution = $provider->resolve(new ResolveScanRequest(
+        $http = new FakeHttpClient();
+        $html = $this->fixture('multi-scan.html');
+        $http->respond(self::MULTI_UNIT, new HttpResponse(200, [], $html, self::MULTI_UNIT));
+        $provider = $this->provider($http);
+        $request = new ResolveScanRequest(
             new ScanResourceReference(self::MULTI_UNIT . '#scan2'),
-            new ScanLocatorHints(),
-        ));
+            new ScanLocatorHints(
+                scanNumberRaw: '2',
+                archiveSignatureRaw: '827/6.1/63',
+            ),
+        );
 
-        self::assertSame(ScanResolutionStatus::Unsupported, $resolution->status);
-        self::assertSame('scan_resolution_not_implemented', $resolution->reason);
+        $resolution = $provider->resolve($request);
+
+        self::assertSame(ScanResolutionStatus::Resolved, $resolution->status);
+        self::assertSame(OrdinalScanResolver::STRATEGY, $resolution->strategy);
+        self::assertNotNull($resolution->resolved);
+        self::assertSame('700002', $resolution->resolved->scan->remoteId);
+        self::assertSame(2, $resolution->resolved->scan->metadata['scan_ordinal']);
+        self::assertSame('#scan2', $resolution->resolved->matchedHintRaw);
+        self::assertSame(self::MULTI_UNIT . '#scan2', $resolution->request->resource->url);
+        self::assertSame('827/6.1/63', $resolution->request->hints->archiveSignatureRaw);
+        self::assertSame('990003', $resolution->resolved->catalogProvenance->details['unit_id']);
+        self::assertSame([self::MULTI_UNIT], $http->requests);
+
+        $serialized = $resolution->jsonSerialize();
+        self::assertSame(ScanResolution::SCHEMA, $serialized['schema']);
+    }
+
+    public function testItReturnsSafeStatusForOutOfRangeMalformedMissingAndConflictingOrdinals(): void
+    {
+        $html = $this->fixture('multi-scan.html');
+
+        $http = new FakeHttpClient();
+        $http->respond(self::MULTI_UNIT, new HttpResponse(200, [], $html, self::MULTI_UNIT));
+        $outOfRange = $this->provider($http)->resolve(new ResolveScanRequest(
+            new ScanResourceReference(self::MULTI_UNIT . '#scan42'),
+        ));
+        self::assertSame(ScanResolutionStatus::Unresolved, $outOfRange->status);
+        self::assertSame('scan_ordinal_not_found', $outOfRange->reason);
+        self::assertSame(self::MULTI_UNIT . '#scan42', $outOfRange->request->resource->url);
+
+        $http = new FakeHttpClient();
+        $http->respond(self::MULTI_UNIT, new HttpResponse(200, [], $html, self::MULTI_UNIT));
+        $malformed = $this->provider($http)->resolve(new ResolveScanRequest(
+            new ScanResourceReference(self::MULTI_UNIT . '#scan0'),
+        ));
+        self::assertSame(ScanResolutionStatus::Unsupported, $malformed->status);
+        self::assertSame('unsupported_scan_fragment', $malformed->reason);
+
+        $http = new FakeHttpClient();
+        $http->respond(self::MULTI_UNIT, new HttpResponse(200, [], $html, self::MULTI_UNIT));
+        $missing = $this->provider($http)->resolve(new ResolveScanRequest(
+            new ScanResourceReference(self::MULTI_UNIT),
+        ));
+        self::assertSame(ScanResolutionStatus::Unresolved, $missing->status);
+        self::assertSame('missing_scan_ordinal', $missing->reason);
+
+        $http = new FakeHttpClient();
+        $http->respond(self::MULTI_UNIT, new HttpResponse(200, [], $html, self::MULTI_UNIT));
+        $conflict = $this->provider($http)->resolve(new ResolveScanRequest(
+            new ScanResourceReference(self::MULTI_UNIT . '#scan2'),
+            new ScanLocatorHints(scanNumberRaw: '3'),
+        ));
+        self::assertSame(ScanResolutionStatus::Unresolved, $conflict->status);
+        self::assertSame('conflicting_scan_ordinals', $conflict->reason);
+        self::assertSame('3', $conflict->request->hints->scanNumberRaw);
+        self::assertSame(self::MULTI_UNIT . '#scan2', $conflict->request->resource->url);
     }
 
     private function provider(FakeHttpClient $http, int $maxAttempts = 3): SzukajWArchiwachProvider

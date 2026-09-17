@@ -36,6 +36,7 @@ final class SzukajWArchiwachProvider implements ScanProviderInterface, ScanCatal
     public function __construct(
         private readonly HttpClientInterface $http,
         private readonly CatalogPageParser $parser = new CatalogPageParser(),
+        private readonly OrdinalScanResolver $ordinalResolver = new OrdinalScanResolver(),
         private readonly ClockInterface $clock = new SystemClock(),
         private readonly int $maxAttempts = 3,
         private readonly int $retryBackoffMilliseconds = 500,
@@ -199,19 +200,16 @@ final class SzukajWArchiwachProvider implements ScanProviderInterface, ScanCatal
             );
         }
 
-        return new ScanResolution(
-            status: ScanResolutionStatus::Unsupported,
-            providerKey: self::KEY,
-            request: $request,
-            reason: 'scan_resolution_not_implemented',
-            trace: ['Catalog discovery is supported; deterministic ordinal resolution is implemented by the next P2 step.'],
+        return $this->ordinalResolver->resolve(
+            $request,
+            $this->discoverScans($request->resource),
         );
     }
 
     public function download(ResolvedScan $scan, ScanAssetStorageInterface $storage): DownloadedScan
     {
         throw new ScanCapabilityUnavailableException(
-            'Szukaj w Archiwach raw asset download is not implemented by the catalog-discovery step.',
+            'Szukaj w Archiwach raw asset download is not implemented by the ordinal-resolution step.',
         );
     }
 
