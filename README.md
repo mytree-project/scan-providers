@@ -45,9 +45,9 @@ szukajwarchiwach
 host: www.szukajwarchiwach.gov.pl
 ```
 
-The current P2 implementation step supports catalog discovery for known current unit URLs. It preserves the numeric unit ID, declared `Skany (N)` / `Scans (N)` cardinality, ordered scan ordinals, provider object/file locators and unit metadata/provenance. Zero-scan and paginated units are explicit supported cases.
+The current P2 implementation supports catalog discovery for known current unit URLs plus deterministic ordinal resolution from `#scan<N>` deep links or explicit positive `scanNumberRaw` hints. It preserves the numeric unit ID, declared `Skany (N)` / `Scans (N)` cardinality, ordered scan ordinals, provider object/file locators and unit metadata/provenance. Zero-scan and paginated units are explicit supported cases.
 
-Deterministic `#scan<N>` resolution and per-object raw asset download are intentionally deferred to the following P2 steps. See [docs/SZUKAJWARCHIWACH.md](docs/SZUKAJWARCHIWACH.md).
+Per-object viewer/raw asset resolution and download remain deferred to the following P2 step. See [docs/SZUKAJWARCHIWACH.md](docs/SZUKAJWARCHIWACH.md).
 
 ## Requirements
 
@@ -169,7 +169,7 @@ Normal tests use local fixtures and fake HTTP responses. CI does not depend on t
 ## Current limitations
 
 - The default CLI composition root currently registers only `genealodzy-skanoteka`; Szukaj w Archiwach registration is a later P2 step.
-- Szukaj w Archiwach currently supports catalog discovery only; ordinal resolution and asset download are intentionally explicit unsupported outcomes in this step.
+- Szukaj w Archiwach currently supports known-unit catalog discovery and deterministic scan-ordinal resolution; per-object viewer/raw asset resolution and download remain intentionally unsupported until the next P2 step.
 - Genealodzy Skanoteka act resolution supports positive numeric act numbers and strict exact/range filename conventions only.
 - The package starts from a known scan-resource/catalog URL. Discovering the correct remote collection solely from parish/year/type is intentionally outside the initial API and can be introduced later as a segregated capability.
 - Provider HTML changes may require parser updates; provenance hashes and fixture tests make such changes diagnosable.

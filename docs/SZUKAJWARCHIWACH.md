@@ -8,13 +8,14 @@ Provider key:
 szukajwarchiwach
 ```
 
-The first P2 implementation step supports fixture-backed catalog discovery for a known current unit URL:
+The current P2 implementation supports fixture-backed catalog discovery and deterministic ordinal resolution for a known current unit URL:
 
 ```text
 https://www.szukajwarchiwach.gov.pl/jednostka/-/jednostka/<unit-id>
+https://www.szukajwarchiwach.gov.pl/jednostka/-/jednostka/<unit-id>#scan<N>
 ```
 
-The numeric unit identifier is a provider locator. It is not a MyTree `SourceId` and catalog discovery does not establish historical source identity.
+The numeric unit identifier is a provider locator. It is not a MyTree `SourceId`, and catalog discovery or ordinal resolution does not establish historical source identity.
 
 ## Catalog discovery
 
@@ -29,7 +30,33 @@ The numeric unit identifier is a provider locator. It is not a MyTree `SourceId`
 - assigns a stable one-based `scan_ordinal` from the complete ordered catalog,
 - keeps the unit ID, metadata, raw metadata fields, per-page hashes and complete discovery hash in provenance.
 
-At this stage the provider intentionally does not resolve `#scan<N>` to one object and does not resolve per-object viewer/download URLs. `AvailableScan::viewerUrl` therefore remains the unit URL and `remoteFilename` remains empty; the provider object locator is preserved explicitly in `remoteId`, opaque locators and metadata. Later P2 steps fill the resolution/download behavior without changing the catalog ordering contract.
+`AvailableScan::viewerUrl` remains the unit URL and `remoteFilename` remains empty until the later per-object viewer/download step. The provider object locator is preserved explicitly in `remoteId`, opaque locators and metadata.
+
+## Ordinal resolution
+
+Szukaj w Archiwach deep links use a browser fragment such as:
+
+```text
+#scan42
+```
+
+The fragment is a locator hint, not an asset URL. Resolution therefore parses the requested positive ordinal, discovers or reuses the current unit catalog, and matches the requested value against the catalog entry's explicit `scan_ordinal` metadata.
+
+Package callers may alternatively supply the positive decimal ordinal through `ScanLocatorHints::scanNumberRaw` when the resource URL does not contain a fragment. If both the URL fragment and `scanNumberRaw` are present, they must agree. Conflicting raw hints are preserved on the request and resolution returns `unresolved` instead of choosing one silently.
+
+Resolution outcomes are explicit:
+
+```text
+exactly one matching ordinal  -> resolved
+no matching ordinal           -> unresolved
+more than one matching ordinal-> ambiguous
+malformed/unsupported locator  -> unsupported
+missing ordinal                -> unresolved
+```
+
+A resolved result retains the exact provider object/file locator selected from catalog discovery, the original request URL/hints, the `scan_ordinal` strategy and the full catalog provenance. An out-of-range raw index locator remains visible in the request even when current discovery contradicts it.
+
+The serialized result remains `mytree.scan-resolution.v1`; this step adds provider behavior without changing the public result shape.
 
 ## Metadata and provenance
 
@@ -77,23 +104,27 @@ This is an undocumented public-web integration. The discovery adapter is deliber
 
 Normal automated tests never access the live service.
 
-## Fixtures
+## Fixtures and tests
 
-Fixtures under `tests/fixtures/szukajwarchiwach/` are sanitized structural fixtures based on the public HTML selectors recorded during feasibility work. They cover:
+Fixtures under `tests/fixtures/szukajwarchiwach/` are sanitized structural fixtures based on the public HTML selectors recorded during feasibility work. They cover metadata-rich, zero-scan, paginated and malformed catalog structures.
 
-- a metadata-rich multi-scan unit,
-- a zero-scan unit,
-- a 30-scan paginated catalog split over three pages,
-- malformed/changed HTML.
+Ordinal parsing/resolution tests additionally cover:
 
-They intentionally avoid depending on live service availability or undocumented internal API endpoints.
+- the accepted `#scan42` form,
+- first/last valid ordinals,
+- out-of-range discovery mismatches,
+- malformed/non-positive fragments,
+- missing ordinals,
+- conflicting raw locator hints,
+- deliberately non-unique catalog ordinal metadata producing `ambiguous`.
+
+Tests intentionally avoid live service availability and undocumented internal API endpoints.
 
 ## Deferred P2 work
 
-The following capabilities are deliberately outside this step:
+The following capabilities remain outside this step:
 
 ```text
-#scan<N> deterministic resolution
 per-object viewer route resolution
 raw asset/download URL resolution
 asset download

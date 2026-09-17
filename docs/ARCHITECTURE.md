@@ -62,7 +62,7 @@ Every scan provider exposes a stable key, precise resource matching, scan resolu
 
 The provider key is an open string identifier rather than an enum because additional providers are expected.
 
-A provider may be introduced incrementally. During a milestone step that implements catalog discovery before deterministic resolution/download, unsupported operations remain explicit rather than guessing or silently falling back.
+A provider may be introduced incrementally. During a milestone step that implements catalog discovery or resolution before download, unsupported operations remain explicit rather than guessing or silently falling back.
 
 ### `ScanCatalogDiscoveryInterface`
 
@@ -92,17 +92,22 @@ anything else -> opaque locator
 
 For download, the provider opens the resolved viewer page, resolves the best matching image/download link and validates that the downloaded response is an image before storing it.
 
-## Szukaj w Archiwach provider — P2 catalog discovery
+## Szukaj w Archiwach provider — P2 catalog and ordinal resolution
 
 Current supported resource family:
 
 ```text
 https://www.szukajwarchiwach.gov.pl/jednostka/-/jednostka/<unit-id>
+https://www.szukajwarchiwach.gov.pl/jednostka/-/jednostka/<unit-id>#scan<N>
 ```
 
 The provider uses the public unit HTML as an undocumented web integration. The catalog parser preserves the numeric provider unit ID, unit metadata/raw fields, declared digital scan cardinality, ordered scan ordinals and numeric `data-plikid` object locators. Pagination is followed sequentially and the final enumeration must equal the declared `Skany (N)` / `Scans (N)` value before the result can be cached as successful discovery.
 
-The P2 catalog step does not implement `#scan<N>` resolution, per-object viewer resolution or asset download. The unit URL remains the `AvailableScan` viewer context and the provider object ID is the stable discovery locator until later P2 steps add those capabilities.
+Ordinal resolution treats `#scan<N>` as a browser-side locator hint rather than an asset URL. The provider parses a positive ordinal from the fragment, or from explicit `ScanLocatorHints::scanNumberRaw` when no fragment is present, and matches it against the catalog entry's explicit `scan_ordinal` metadata. The exact provider object/file locator comes from the discovered `AvailableScan::remoteId`; it is never inferred from the ordinal itself.
+
+Conflicting raw hints, missing/out-of-range ordinals and non-unique catalog matches remain explicit `unresolved` / `ambiguous` / `unsupported` outcomes. The original `ResolveScanRequest`, catalog candidates and catalog provenance remain attached to the result so disagreement between supplied locator data and current discovery is diagnosable.
+
+Per-object viewer resolution and raw asset download remain deferred to the following P2 step. Until then the unit URL remains the `AvailableScan` viewer context.
 
 See [SZUKAJWARCHIWACH.md](SZUKAJWARCHIWACH.md).
 
@@ -126,7 +131,7 @@ discovery strategy
 
 Provider-specific catalog provenance may add stable remote identifiers, page hashes, metadata and cardinality as long as external raw values remain preserved and provider semantics stay inside the adapter.
 
-A downloaded scan additionally records:
+A scan resolution additionally preserves the full request, candidates, strategy/status, selected catalog entry when resolved and catalog provenance. A downloaded scan additionally records:
 
 ```text
 viewer URL
