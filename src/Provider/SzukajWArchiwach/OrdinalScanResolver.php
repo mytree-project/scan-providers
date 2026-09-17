@@ -19,28 +19,22 @@ final readonly class OrdinalScanResolver
     {
     }
 
+    public function preflight(ResolveScanRequest $request): ?ScanResolution
+    {
+        $parsed = $this->parser->parse($request);
+        if ($parsed->status === OrdinalLocatorParseResult::VALID) {
+            return null;
+        }
+
+        return $this->resolutionForParseFailure($request, $parsed);
+    }
+
     public function resolve(ResolveScanRequest $request, ScanCatalog $catalog): ScanResolution
     {
         $parsed = $this->parser->parse($request);
-        if ($parsed->status === OrdinalLocatorParseResult::UNSUPPORTED) {
-            return new ScanResolution(
-                status: ScanResolutionStatus::Unsupported,
-                providerKey: SzukajWArchiwachProvider::KEY,
-                request: $request,
-                strategy: self::STRATEGY,
-                reason: $parsed->reason,
-                trace: $parsed->trace,
-            );
-        }
-        if (in_array($parsed->status, [OrdinalLocatorParseResult::MISSING, OrdinalLocatorParseResult::CONFLICT], true)) {
-            return new ScanResolution(
-                status: ScanResolutionStatus::Unresolved,
-                providerKey: SzukajWArchiwachProvider::KEY,
-                request: $request,
-                strategy: self::STRATEGY,
-                reason: $parsed->reason,
-                trace: $parsed->trace,
-            );
+        $failure = $this->resolutionForParseFailure($request, $parsed);
+        if ($failure !== null) {
+            return $failure;
         }
 
         $ordinal = $parsed->ordinal;
@@ -99,5 +93,34 @@ final readonly class OrdinalScanResolver
             strategy: self::STRATEGY,
             trace: $trace,
         );
+    }
+
+    private function resolutionForParseFailure(
+        ResolveScanRequest $request,
+        OrdinalLocatorParseResult $parsed,
+    ): ?ScanResolution
+    {
+        if ($parsed->status === OrdinalLocatorParseResult::UNSUPPORTED) {
+            return new ScanResolution(
+                status: ScanResolutionStatus::Unsupported,
+                providerKey: SzukajWArchiwachProvider::KEY,
+                request: $request,
+                strategy: self::STRATEGY,
+                reason: $parsed->reason,
+                trace: $parsed->trace,
+            );
+        }
+        if (in_array($parsed->status, [OrdinalLocatorParseResult::MISSING, OrdinalLocatorParseResult::CONFLICT], true)) {
+            return new ScanResolution(
+                status: ScanResolutionStatus::Unresolved,
+                providerKey: SzukajWArchiwachProvider::KEY,
+                request: $request,
+                strategy: self::STRATEGY,
+                reason: $parsed->reason,
+                trace: $parsed->trace,
+            );
+        }
+
+        return null;
     }
 }

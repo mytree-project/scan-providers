@@ -200,6 +200,11 @@ final class SzukajWArchiwachProvider implements ScanProviderInterface, ScanCatal
             );
         }
 
+        $preflight = $this->ordinalResolver->preflight($request);
+        if ($preflight !== null) {
+            return $preflight;
+        }
+
         return $this->ordinalResolver->resolve(
             $request,
             $this->discoverScans($request->resource),

@@ -162,23 +162,22 @@ final class SzukajWArchiwachProviderTest extends TestCase
         self::assertSame(self::MULTI_UNIT . '#scan42', $outOfRange->request->resource->url);
 
         $http = new FakeHttpClient();
-        $http->respond(self::MULTI_UNIT, new HttpResponse(200, [], $html, self::MULTI_UNIT));
         $malformed = $this->provider($http)->resolve(new ResolveScanRequest(
             new ScanResourceReference(self::MULTI_UNIT . '#scan0'),
         ));
         self::assertSame(ScanResolutionStatus::Unsupported, $malformed->status);
         self::assertSame('unsupported_scan_fragment', $malformed->reason);
+        self::assertSame([], $http->requests);
 
         $http = new FakeHttpClient();
-        $http->respond(self::MULTI_UNIT, new HttpResponse(200, [], $html, self::MULTI_UNIT));
         $missing = $this->provider($http)->resolve(new ResolveScanRequest(
             new ScanResourceReference(self::MULTI_UNIT),
         ));
         self::assertSame(ScanResolutionStatus::Unresolved, $missing->status);
         self::assertSame('missing_scan_ordinal', $missing->reason);
+        self::assertSame([], $http->requests);
 
         $http = new FakeHttpClient();
-        $http->respond(self::MULTI_UNIT, new HttpResponse(200, [], $html, self::MULTI_UNIT));
         $conflict = $this->provider($http)->resolve(new ResolveScanRequest(
             new ScanResourceReference(self::MULTI_UNIT . '#scan2'),
             new ScanLocatorHints(scanNumberRaw: '3'),
@@ -187,6 +186,7 @@ final class SzukajWArchiwachProviderTest extends TestCase
         self::assertSame('conflicting_scan_ordinals', $conflict->reason);
         self::assertSame('3', $conflict->request->hints->scanNumberRaw);
         self::assertSame(self::MULTI_UNIT . '#scan2', $conflict->request->resource->url);
+        self::assertSame([], $http->requests);
     }
 
     private function provider(FakeHttpClient $http, int $maxAttempts = 3): SzukajWArchiwachProvider
