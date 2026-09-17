@@ -45,9 +45,9 @@ szukajwarchiwach
 host: www.szukajwarchiwach.gov.pl
 ```
 
-The current P2 implementation supports catalog discovery for known current unit URLs plus deterministic ordinal resolution from `#scan<N>` deep links or explicit positive `scanNumberRaw` hints. It preserves the numeric unit ID, declared `Skany (N)` / `Scans (N)` cardinality, ordered scan ordinals, provider object/file locators and unit metadata/provenance. Zero-scan and paginated units are explicit supported cases.
+The current P2 implementation supports catalog discovery for known current unit URLs, deterministic ordinal resolution from `#scan<N>` deep links or explicit positive `scanNumberRaw` hints, and per-object asset download. A resolved catalog entry carries the exact public object viewer route, and download opens that viewer, extracts the public `/skan/-/skan/<opaque-token>` link, validates the returned image and stores it through the shared storage boundary.
 
-Per-object viewer/raw asset resolution and download remain deferred to the following P2 step. See [docs/SZUKAJWARCHIWACH.md](docs/SZUKAJWARCHIWACH.md).
+The adapter does not use undocumented `/o/pliki-api/...` endpoints as its download contract. It preserves the numeric unit ID, declared `Skany (N)` / `Scans (N)` cardinality, ordered scan ordinals, provider object/file locators and unit metadata/provenance. Zero-scan and paginated units are explicit supported cases. See [docs/SZUKAJWARCHIWACH.md](docs/SZUKAJWARCHIWACH.md).
 
 ## Requirements
 
@@ -169,7 +169,8 @@ Normal tests use local fixtures and fake HTTP responses. CI does not depend on t
 ## Current limitations
 
 - The default CLI composition root currently registers only `genealodzy-skanoteka`; Szukaj w Archiwach registration is a later P2 step.
-- Szukaj w Archiwach currently supports known-unit catalog discovery and deterministic scan-ordinal resolution; per-object viewer/raw asset resolution and download remain intentionally unsupported until the next P2 step.
+- Szukaj w Archiwach starts from a known current numeric-unit URL; arbitrary archival-signature-to-unit search is not implemented.
+- Szukaj w Archiwach uses per-object acquisition; optimized whole-unit/batch download is intentionally deferred.
 - Genealodzy Skanoteka act resolution supports positive numeric act numbers and strict exact/range filename conventions only.
 - The package starts from a known scan-resource/catalog URL. Discovering the correct remote collection solely from parish/year/type is intentionally outside the initial API and can be introduced later as a segregated capability.
 - Provider HTML changes may require parser updates; provenance hashes and fixture tests make such changes diagnosable.
