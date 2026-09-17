@@ -62,6 +62,8 @@ Every scan provider exposes a stable key, precise resource matching, scan resolu
 
 The provider key is an open string identifier rather than an enum because additional providers are expected.
 
+A provider may be introduced incrementally. During a milestone step that implements catalog discovery before deterministic resolution/download, unsupported operations remain explicit rather than guessing or silently falling back.
+
 ### `ScanCatalogDiscoveryInterface`
 
 Optional capability for providers that can enumerate scans inside a remote resource. Providers that cannot meaningfully list a catalog are not forced to implement it.
@@ -70,9 +72,9 @@ Optional capability for providers that can enumerate scans inside a remote resou
 
 Routing is provider-driven. There is no central switch over known domains. If zero providers match, routing fails explicitly. If more than one provider matches, routing fails as ambiguous instead of silently choosing by registration order.
 
-## First provider: Genealodzy Skanoteka
+## Genealodzy Skanoteka provider
 
-Initial routing target:
+Routing target:
 
 ```text
 https://metryki.genealodzy.pl/...
@@ -90,6 +92,20 @@ anything else -> opaque locator
 
 For download, the provider opens the resolved viewer page, resolves the best matching image/download link and validates that the downloaded response is an image before storing it.
 
+## Szukaj w Archiwach provider — P2 catalog discovery
+
+Current supported resource family:
+
+```text
+https://www.szukajwarchiwach.gov.pl/jednostka/-/jednostka/<unit-id>
+```
+
+The provider uses the public unit HTML as an undocumented web integration. The catalog parser preserves the numeric provider unit ID, unit metadata/raw fields, declared digital scan cardinality, ordered scan ordinals and numeric `data-plikid` object locators. Pagination is followed sequentially and the final enumeration must equal the declared `Skany (N)` / `Scans (N)` value before the result can be cached as successful discovery.
+
+The P2 catalog step does not implement `#scan<N>` resolution, per-object viewer resolution or asset download. The unit URL remains the `AvailableScan` viewer context and the provider object ID is the stable discovery locator until later P2 steps add those capabilities.
+
+See [SZUKAJWARCHIWACH.md](SZUKAJWARCHIWACH.md).
+
 ## Determinism
 
 Pure parser/resolution components are deterministic for the same input. Network retrieval timestamps and remote content are explicit I/O inputs and are preserved in provenance.
@@ -104,9 +120,11 @@ A catalog records:
 provider key/version
 resource URL
 retrieval timestamp
-SHA-256 of provider response
+SHA-256 of provider response/discovery corpus
 discovery strategy
 ```
+
+Provider-specific catalog provenance may add stable remote identifiers, page hashes, metadata and cardinality as long as external raw values remain preserved and provider semantics stay inside the adapter.
 
 A downloaded scan additionally records:
 
@@ -119,9 +137,9 @@ asset SHA-256
 storage path
 ```
 
-Original remote filenames and request hints are preserved; normalization does not replace raw values.
+Original remote filenames and request hints are preserved when the provider exposes them; normalization does not replace raw values.
 
-## Non-goals for v0.1
+## Non-goals
 
 - MyTree source identity reconciliation
 - OCR or transcription

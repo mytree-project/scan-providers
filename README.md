@@ -4,9 +4,11 @@ Framework-independent PHP package for discovering, resolving and downloading gen
 
 The package is designed to remain reusable outside Laravel. MyTree/Laravel integration should be implemented through adapters and the Laravel composition root rather than by introducing framework dependencies into this core package.
 
-## Initial provider
+## Providers
 
-The first provider is:
+### Genealodzy Skanoteka
+
+Provider key:
 
 ```text
 genealodzy-skanoteka
@@ -34,6 +36,19 @@ download and store the raw image
 
 The provider does **not** use OCR or fuzzy identity matching. It does not claim that a scan belongs to an act when the provider's catalog does not expose a supported deterministic locator.
 
+### Szukaj w Archiwach
+
+Provider key:
+
+```text
+szukajwarchiwach
+host: www.szukajwarchiwach.gov.pl
+```
+
+The current P2 implementation step supports catalog discovery for known current unit URLs. It preserves the numeric unit ID, declared `Skany (N)` / `Scans (N)` cardinality, ordered scan ordinals, provider object/file locators and unit metadata/provenance. Zero-scan and paginated units are explicit supported cases.
+
+Deterministic `#scan<N>` resolution and per-object raw asset download are intentionally deferred to the following P2 steps. See [docs/SZUKAJWARCHIWACH.md](docs/SZUKAJWARCHIWACH.md).
+
 ## Requirements
 
 - PHP 8.2+
@@ -54,6 +69,8 @@ List registered providers:
 ```bash
 php bin/mytree-scan providers
 ```
+
+The default CLI composition root still registers only fully integrated providers. Szukaj w Archiwach default CLI registration is deferred until the P2 registration/serialization step.
 
 ### Discover available scans
 
@@ -151,7 +168,8 @@ Normal tests use local fixtures and fake HTTP responses. CI does not depend on t
 
 ## Current limitations
 
-- v0.1 routes only `metryki.genealodzy.pl` to `genealodzy-skanoteka`.
-- Act resolution supports positive numeric act numbers and strict exact/range filename conventions only.
+- The default CLI composition root currently registers only `genealodzy-skanoteka`; Szukaj w Archiwach registration is a later P2 step.
+- Szukaj w Archiwach currently supports catalog discovery only; ordinal resolution and asset download are intentionally explicit unsupported outcomes in this step.
+- Genealodzy Skanoteka act resolution supports positive numeric act numbers and strict exact/range filename conventions only.
 - The package starts from a known scan-resource/catalog URL. Discovering the correct remote collection solely from parish/year/type is intentionally outside the initial API and can be introduced later as a segregated capability.
 - Provider HTML changes may require parser updates; provenance hashes and fixture tests make such changes diagnosable.
