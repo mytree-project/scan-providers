@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Add initial `szukajwarchiwach` known-unit catalog discovery with metadata, digital scan cardinality, ordered provider object locators, pagination validation, bounded retry/pacing, in-memory validated-result caching and offline fixtures.
+
 ## 0.1.0
 
 - Initial framework-independent scan provider package.
