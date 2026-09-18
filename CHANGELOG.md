@@ -4,6 +4,7 @@
 
 - Add initial `szukajwarchiwach` known-unit catalog discovery with metadata, digital scan cardinality, ordered provider object locators, pagination validation, bounded retry/pacing, in-memory validated-result caching and offline fixtures.
 - Add deterministic Szukaj w Archiwach scan-ordinal resolution from `#scan<N>` or explicit `scanNumberRaw`, with safe unresolved/ambiguous/unsupported outcomes and preserved catalog provenance.
+- Add Szukaj w Archiwach per-object viewer resolution and public `/skan/-/skan/<opaque-token>` image download with MIME validation, bounded retries, stored size/SHA-256 and preserved catalog provenance.
 
 ## 0.1.0
 

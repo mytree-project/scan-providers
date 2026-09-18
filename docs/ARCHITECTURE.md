@@ -92,7 +92,7 @@ anything else -> opaque locator
 
 For download, the provider opens the resolved viewer page, resolves the best matching image/download link and validates that the downloaded response is an image before storing it.
 
-## Szukaj w Archiwach provider — P2 catalog and ordinal resolution
+## Szukaj w Archiwach provider — P2 catalog, ordinal resolution and asset download
 
 Current supported resource family:
 
@@ -101,13 +101,25 @@ https://www.szukajwarchiwach.gov.pl/jednostka/-/jednostka/<unit-id>
 https://www.szukajwarchiwach.gov.pl/jednostka/-/jednostka/<unit-id>#scan<N>
 ```
 
-The provider uses the public unit HTML as an undocumented web integration. The catalog parser preserves the numeric provider unit ID, unit metadata/raw fields, declared digital scan cardinality, ordered scan ordinals and numeric `data-plikid` object locators. Pagination is followed sequentially and the final enumeration must equal the declared `Skany (N)` / `Scans (N)` value before the result can be cached as successful discovery.
+The provider uses public Szukaj w Archiwach HTML/routes as an undocumented web integration. The catalog parser preserves the numeric provider unit ID, unit metadata/raw fields, declared digital scan cardinality, ordered scan ordinals and numeric `data-plikid` object locators. Pagination is followed sequentially and the final enumeration must equal the declared `Skany (N)` / `Scans (N)` value before the result can be cached as successful discovery.
+
+Each discovered entry derives its exact public object viewer from the discovered identifiers:
+
+```text
+/jednostka/-/jednostka/<unit-id>/obiekty/<object-id>
+```
 
 Ordinal resolution treats `#scan<N>` as a browser-side locator hint rather than an asset URL. The provider parses a positive ordinal from the fragment, or from explicit `ScanLocatorHints::scanNumberRaw` when no fragment is present, and matches it against the catalog entry's explicit `scan_ordinal` metadata. The exact provider object/file locator comes from the discovered `AvailableScan::remoteId`; it is never inferred from the ordinal itself.
 
 Conflicting raw hints, missing/out-of-range ordinals and non-unique catalog matches remain explicit `unresolved` / `ambiguous` / `unsupported` outcomes. The original `ResolveScanRequest`, catalog candidates and catalog provenance remain attached to the result so disagreement between supplied locator data and current discovery is diagnosable.
 
-Per-object viewer resolution and raw asset download remain deferred to the following P2 step. Until then the unit URL remains the `AvailableScan` viewer context.
+For download, the provider opens the exact object viewer and extracts one supported public scan link:
+
+```text
+/skan/-/skan/<opaque-token>
+```
+
+The token is treated as opaque provider data. The adapter deliberately ignores undocumented `/o/pliki-api/...` routes as public contracts. Missing or non-unique public scan links fail explicitly. The selected public scan URL is fetched through the shared HTTP boundary, validated as an image, stored through `ScanAssetStorageInterface`, and returned with the existing `mytree.downloaded-scan.v1` semantics. A small provider-specific retry collaborator supplies the same bounded transport/`429`/`5xx` policy to catalog, viewer and asset retrieval.
 
 See [SZUKAJWARCHIWACH.md](SZUKAJWARCHIWACH.md).
 
@@ -137,12 +149,15 @@ A scan resolution additionally preserves the full request, candidates, strategy/
 viewer URL
 download URL
 resolution strategy
+asset MIME type
 asset size
 asset SHA-256
 storage path
+retrieval timestamp
+catalog provenance
 ```
 
-Original remote filenames and request hints are preserved when the provider exposes them; normalization does not replace raw values.
+Original remote filenames and request hints are preserved when the provider exposes them; normalization does not replace raw values. A provider-generated storage filename does not claim to be the remote filename when the remote service did not publish one.
 
 ## Non-goals
 
