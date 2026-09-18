@@ -6,6 +6,7 @@
 - Add deterministic Szukaj w Archiwach scan-ordinal resolution from `#scan<N>` or explicit `scanNumberRaw`, with safe unresolved/ambiguous/unsupported outcomes and preserved catalog provenance.
 - Add Szukaj w Archiwach per-object viewer resolution and public `/skan/-/skan/<opaque-token>` image download with MIME validation, bounded retries, stored size/SHA-256 and preserved catalog provenance.
 - Register the completed Szukaj w Archiwach provider in the standalone CLI/default registry, add provider-neutral discovery output and end-to-end offline registry/serialization coverage while retaining the existing v1 schemas.
+- Accept official Szukaj w Archiwach `/skan/-/skan/<opaque-token>` links as exact resolvable/downloadable resources and tolerate current `_Jednostka_cur` catalog pagination when the historical `Skany (N)` label is absent.
 
 ## 0.1.0
 

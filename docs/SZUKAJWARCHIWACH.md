@@ -13,6 +13,7 @@ The completed P2 package implementation supports fixture-backed catalog discover
 ```text
 https://www.szukajwarchiwach.gov.pl/jednostka/-/jednostka/<unit-id>
 https://www.szukajwarchiwach.gov.pl/jednostka/-/jednostka/<unit-id>#scan<N>
+https://www.szukajwarchiwach.gov.pl/skan/-/skan/<opaque-token>
 ```
 
 The numeric unit identifier and per-object identifier are provider locators. They are not MyTree `SourceId` values, and discovery, resolution or download does not establish historical source identity.
@@ -21,7 +22,7 @@ The numeric unit identifier and per-object identifier are provider locators. The
 
 The standalone CLI registers `SzukajWArchiwachProvider` together with `GenealodzySkanotekaProvider` through `DefaultScanProviderRegistryFactory`. The factory builds the normal `ScanProviderRegistry`; callers do not switch on provider keys or hosts themselves.
 
-Routing support is deliberately narrow. Szukaj w Archiwach matches the current numeric-unit URL family on `www.szukajwarchiwach.gov.pl`. A legacy locator such as:
+Routing support is deliberately narrow. Szukaj w Archiwach matches the current numeric-unit URL family and the official public `/skan/-/skan/<opaque-token>` family on the current service host. Locale-prefixed current unit paths such as `/en/jednostka/...` and `/de/jednostka/...` are accepted and canonicalized internally for discovery. A legacy locator such as:
 
 ```text
 https://szukajwarchiwach.pl/54/744/0/6.1/47/str/1/3/15/
@@ -34,10 +35,11 @@ is not claimed by the provider and is not mechanically rewritten. Such legacy va
 `SzukajWArchiwachProvider` implements `ScanCatalogDiscoveryInterface`. Discovery:
 
 - reads the public unit HTML rather than an undocumented service API,
-- treats `Skany (N)` / `Scans (N)` as the digital scan cardinality,
-- accepts `Skany (0)` as a valid empty catalog,
-- follows the public catalog pagination in order,
-- verifies that complete enumeration matches the declared cardinality,
+- uses `Skany (N)` / `Scans (N)` as the declared digital scan cardinality when that label is present,
+- accepts an explicit declared zero as a valid empty catalog,
+- follows the public catalog pagination in order, including the current Liferay-style `_Jednostka_cur` links,
+- verifies complete enumeration against a declared cardinality when available,
+- otherwise records the safely enumerated catalog cardinality and marks its provenance as `enumerated_catalog`,
 - preserves the provider object/file locator from `data-plikid` as `AvailableScan::remoteId`,
 - assigns a stable one-based `scan_ordinal` from the complete ordered catalog,
 - derives the public object viewer route from the discovered unit ID plus exact object ID,
@@ -76,6 +78,18 @@ missing ordinal                 -> unresolved
 A resolved result retains the exact provider object/file locator selected from catalog discovery, the original request URL/hints, the `scan_ordinal` strategy and the full catalog provenance. An out-of-range raw index locator remains visible in the request even when current discovery contradicts it.
 
 The serialized result remains `mytree.scan-resolution.v1`; the provider behavior does not change the public result shape.
+
+## Official direct scan links
+
+The portal's side panel exposes an official **Link do skanu** in the form:
+
+```text
+https://www.szukajwarchiwach.gov.pl/skan/-/skan/<opaque-token>
+```
+
+This is already an exact public scan locator and does not need unit-catalog/ordinal resolution. `ResolveScan` therefore returns `resolved` with strategy `direct_public_scan_url` without a network request. `DownloadScan` fetches that same public URL, validates the image MIME type and stores it through `ScanAssetStorageInterface`.
+
+A direct scan URL does not itself reveal unit ID, ordinal or provider object ID. Those values are therefore not invented. The raw URL/token and direct-resolution strategy are preserved as the available provenance. When unit/object/ordinal provenance is required, callers should use the unit + ordinal workflow instead.
 
 ## Per-object viewer and asset download
 
@@ -127,7 +141,7 @@ php bin/mytree-scan download \
   --output=var/scans
 ```
 
-`resolve` and `download` also accept `--scan-number=<N>` with a fragment-free current unit URL. `discover --format=json`, resolution output and download output use the existing structured serialization contracts; no Szukaj-w-Archiwach-specific orchestration command is introduced.
+`resolve` and `download` also accept `--scan-number=<N>` with a fragment-free current unit URL. They additionally accept an official `/skan/-/skan/<opaque-token>` URL directly. `discover --format=json`, resolution output and download output use the existing structured serialization contracts; no Szukaj-w-Archiwach-specific orchestration command is introduced.
 
 The human-readable discovery table uses provider-neutral columns (`REMOTE ID`, `LABEL`, optional `REMOTE FILENAME`, `LOCATOR`, `VIEWER URL`) so providers without a published remote filename remain usable.
 
@@ -198,6 +212,7 @@ This is an undocumented public-web integration. Network behavior is deliberately
 - the same retry policy is reused by catalog, viewer and asset retrieval,
 - successful validated catalogs are cached in-memory for the same resource URL,
 - malformed, incomplete or cardinality-mismatched responses fail explicitly and are never cached as successful discovery,
+- absence of the historical `Skany (N)` label is not by itself an error when ordered scan entries and official pagination can be enumerated safely,
 - unexpected viewer structure and non-image download responses fail explicitly.
 
 Normal automated tests never access the live service.
@@ -217,7 +232,7 @@ current unit URL
   → v1 serialized outputs + provenance
 ```
 
-They also verify that the default standalone registry still routes Genealodzy Skanoteka correctly and does not claim legacy `szukajwarchiwach.pl` URLs. The `providers` CLI listing is tested without network access.
+They also verify official direct `/skan/-/skan/<opaque-token>` resolution/download, count-less `_Jednostka_cur` pagination, that the default standalone registry still routes Genealodzy Skanoteka correctly, and that legacy `szukajwarchiwach.pl` URLs are not claimed. The `providers` CLI listing is tested without network access.
 
 ## Deferred work / non-goals
 

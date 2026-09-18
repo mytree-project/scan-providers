@@ -45,9 +45,9 @@ szukajwarchiwach
 host: www.szukajwarchiwach.gov.pl
 ```
 
-The P2 package implementation supports catalog discovery for known current unit URLs, deterministic ordinal resolution from `#scan<N>` deep links or explicit positive `scanNumberRaw` hints, and per-object asset download. A resolved catalog entry carries the exact public object viewer route, and download opens that viewer, extracts the public `/skan/-/skan/<opaque-token>` link, validates the returned image and stores it through the shared storage boundary.
+The P2 package implementation supports catalog discovery for known current unit URLs, deterministic ordinal resolution from `#scan<N>` deep links or explicit positive `scanNumberRaw` hints, per-object asset download, and official direct `/skan/-/skan/<opaque-token>` links. A direct public scan URL is already an exact locator: `resolve` returns it as resolved without catalog discovery and `download` validates/stores that public asset directly. A unit/ordinal flow still discovers the exact object viewer first and then extracts the same public scan-link family.
 
-The adapter does not use undocumented `/o/pliki-api/...` endpoints as its download contract. It preserves the numeric unit ID, declared `Skany (N)` / `Scans (N)` cardinality, ordered scan ordinals, provider object/file locators and unit metadata/provenance. Zero-scan and paginated units are explicit supported cases. Legacy `szukajwarchiwach.pl` URLs are retained as external provenance/locator values and are not mechanically rewritten into current service URLs.
+The adapter does not use undocumented `/o/pliki-api/...` endpoints as its download contract. For unit discovery it preserves the numeric unit ID, ordered scan ordinals, provider object/file locators and unit metadata/provenance. When `Skany (N)` / `Scans (N)` is present it is verified against complete enumeration; when current HTML omits that label, the adapter follows the official `_Jednostka_cur` pagination and records the enumerated cardinality explicitly. Zero-scan and paginated units are supported without silently treating unrecognized markup as an empty catalog. Legacy `szukajwarchiwach.pl` URLs are retained as external provenance/locator values and are not mechanically rewritten into current service URLs.
 
 See [docs/SZUKAJWARCHIWACH.md](docs/SZUKAJWARCHIWACH.md).
 
@@ -139,6 +139,13 @@ php bin/mytree-scan resolve \
   --scan-number=42
 ```
 
+An official public **Link do skanu** can also be resolved directly:
+
+```bash
+php bin/mytree-scan resolve \
+  --url="https://www.szukajwarchiwach.gov.pl/skan/-/skan/<OPAQUE_TOKEN>"
+```
+
 Resolution statuses are explicit:
 
 ```text
@@ -164,6 +171,14 @@ Szukaj w Archiwach example:
 ```bash
 php bin/mytree-scan download \
   --url="https://www.szukajwarchiwach.gov.pl/jednostka/-/jednostka/<UNIT_ID>#scan42" \
+  --output=var/scans
+```
+
+The official direct scan link works as well:
+
+```bash
+php bin/mytree-scan download \
+  --url="https://www.szukajwarchiwach.gov.pl/skan/-/skan/<OPAQUE_TOKEN>" \
   --output=var/scans
 ```
 
