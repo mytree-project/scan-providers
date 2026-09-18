@@ -45,9 +45,11 @@ szukajwarchiwach
 host: www.szukajwarchiwach.gov.pl
 ```
 
-The current P2 implementation supports catalog discovery for known current unit URLs, deterministic ordinal resolution from `#scan<N>` deep links or explicit positive `scanNumberRaw` hints, and per-object asset download. A resolved catalog entry carries the exact public object viewer route, and download opens that viewer, extracts the public `/skan/-/skan/<opaque-token>` link, validates the returned image and stores it through the shared storage boundary.
+The P2 package implementation supports catalog discovery for known current unit URLs, deterministic ordinal resolution from `#scan<N>` deep links or explicit positive `scanNumberRaw` hints, and per-object asset download. A resolved catalog entry carries the exact public object viewer route, and download opens that viewer, extracts the public `/skan/-/skan/<opaque-token>` link, validates the returned image and stores it through the shared storage boundary.
 
-The adapter does not use undocumented `/o/pliki-api/...` endpoints as its download contract. It preserves the numeric unit ID, declared `Skany (N)` / `Scans (N)` cardinality, ordered scan ordinals, provider object/file locators and unit metadata/provenance. Zero-scan and paginated units are explicit supported cases. See [docs/SZUKAJWARCHIWACH.md](docs/SZUKAJWARCHIWACH.md).
+The adapter does not use undocumented `/o/pliki-api/...` endpoints as its download contract. It preserves the numeric unit ID, declared `Skany (N)` / `Scans (N)` cardinality, ordered scan ordinals, provider object/file locators and unit metadata/provenance. Zero-scan and paginated units are explicit supported cases. Legacy `szukajwarchiwach.pl` URLs are retained as external provenance/locator values and are not mechanically rewritten into current service URLs.
+
+See [docs/SZUKAJWARCHIWACH.md](docs/SZUKAJWARCHIWACH.md).
 
 ## Requirements
 
@@ -64,19 +66,35 @@ composer install
 
 ## CLI
 
+The standalone CLI registers both completed providers through the same `ScanProviderRegistry` extension boundary used by the application services.
+
 List registered providers:
 
 ```bash
 php bin/mytree-scan providers
 ```
 
-The default CLI composition root still registers only fully integrated providers. Szukaj w Archiwach default CLI registration is deferred until the P2 registration/serialization step.
+Expected provider keys include:
+
+```text
+genealodzy-skanoteka
+szukajwarchiwach
+```
 
 ### Discover available scans
+
+Genealodzy Skanoteka example:
 
 ```bash
 php bin/mytree-scan discover \
   --url="https://metryki.genealodzy.pl/metryki.php?op=kt&ar=10&zs=2596d&sy=501&kt=12"
+```
+
+Szukaj w Archiwach example:
+
+```bash
+php bin/mytree-scan discover \
+  --url="https://www.szukajwarchiwach.gov.pl/jednostka/-/jednostka/<UNIT_ID>"
 ```
 
 JSON output:
@@ -85,9 +103,11 @@ JSON output:
 php bin/mytree-scan discover --url="..." --format=json
 ```
 
-Discovery is intentionally a first-class capability. It exposes every recognized scan in the supplied resource, including scans whose filename cannot be interpreted as an act number.
+The table format is provider-neutral and shows the provider remote ID, label, optional remote filename, primary locator and viewer URL. Discovery remains a first-class capability and does not guess historical source identity.
 
-### Resolve a scan by act number
+### Resolve a scan
+
+Genealodzy Skanoteka resolves a strict act-number locator:
 
 ```bash
 php bin/mytree-scan resolve \
@@ -95,7 +115,7 @@ php bin/mytree-scan resolve \
   --record-number=<ACT_NUMBER>
 ```
 
-Supported deterministic filename forms in v0.1:
+Supported deterministic filename forms in v0.1 are:
 
 ```text
 17.jpg       -> act 17
@@ -103,6 +123,21 @@ Supported deterministic filename forms in v0.1:
 ```
 
 Opaque filenames such as `SkU-1.jpg` remain discoverable but are not guessed as act-number mappings.
+
+Szukaj w Archiwach resolves an ordinal either from the current deep link itself:
+
+```bash
+php bin/mytree-scan resolve \
+  --url="https://www.szukajwarchiwach.gov.pl/jednostka/-/jednostka/<UNIT_ID>#scan42"
+```
+
+or from an explicit provider-neutral scan-number hint:
+
+```bash
+php bin/mytree-scan resolve \
+  --url="https://www.szukajwarchiwach.gov.pl/jednostka/-/jednostka/<UNIT_ID>" \
+  --scan-number=42
+```
 
 Resolution statuses are explicit:
 
@@ -115,6 +150,8 @@ unsupported
 
 ### Download a resolved scan
 
+Genealodzy Skanoteka example:
+
 ```bash
 php bin/mytree-scan download \
   --url="https://metryki.genealodzy.pl/metryki.php?op=kt&ar=10&zs=2596d&sy=501&kt=12" \
@@ -122,7 +159,15 @@ php bin/mytree-scan download \
   --output=var/scans
 ```
 
-The result carries the remote resource URL, viewer URL, resolved download URL, retrieval timestamp, SHA-256, file size, provider/version and the resolution strategy.
+Szukaj w Archiwach example:
+
+```bash
+php bin/mytree-scan download \
+  --url="https://www.szukajwarchiwach.gov.pl/jednostka/-/jednostka/<UNIT_ID>#scan42" \
+  --output=var/scans
+```
+
+The result carries the remote resource URL, viewer URL, resolved download URL, retrieval timestamp, SHA-256, file size and resolution strategy together with provider/catalog provenance.
 
 ## Public architecture
 
@@ -140,6 +185,8 @@ DownloadScan
 
 A new scan service should normally be added by implementing `ScanProviderInterface` and registering the provider. If the service can enumerate scans for a remote resource, it can additionally implement `ScanCatalogDiscoveryInterface`.
 
+`DefaultScanProviderRegistryFactory` is the standalone composition root used by the CLI. It only assembles completed provider implementations; routing decisions remain inside `ScanProviderRegistry` and each provider's `supports()` method rather than caller-side switches.
+
 Provider-specific HTTP/HTML/URL rules must stay inside the provider implementation.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/LARAVEL_INTEGRATION.md](docs/LARAVEL_INTEGRATION.md).
@@ -150,7 +197,7 @@ This package downloads assets; it does not decide historical source identity.
 
 A downloaded scan is not automatically a MyTree `Source`. The Laravel/MyTree integration layer may attach it as a `SourceAsset` after preserving its independent provider URL, retrieval metadata and hash. Multiple assets from different providers can represent the same underlying source and must retain independent provenance.
 
-Serialized results use explicit schema identifiers:
+Serialized results use the existing explicit schema identifiers:
 
 ```text
 mytree.scan-catalog.v1
@@ -158,19 +205,22 @@ mytree.scan-resolution.v1
 mytree.downloaded-scan.v1
 ```
 
+The Szukaj w Archiwach P2 integration does not require a schema-version change. Provider-specific unit/object/ordinal metadata remains in the existing scan/provenance structures, while the resolution request preserves the original locator input.
+
 ## Tests
 
 ```bash
 composer test
 ```
 
-Normal tests use local fixtures and fake HTTP responses. CI does not depend on the availability or current HTML of third-party genealogy portals.
+Normal tests use local fixtures and fake HTTP responses. CI does not depend on the availability or current HTML of third-party genealogy portals. Package-level integration coverage includes registry routing and the complete Szukaj w Archiwach discover → resolve → download → serialization flow.
 
 ## Current limitations
 
-- The default CLI composition root currently registers only `genealodzy-skanoteka`; Szukaj w Archiwach registration is a later P2 step.
 - Szukaj w Archiwach starts from a known current numeric-unit URL; arbitrary archival-signature-to-unit search is not implemented.
+- Legacy `szukajwarchiwach.pl` URLs are not mechanically migrated by the scan provider.
 - Szukaj w Archiwach uses per-object acquisition; optimized whole-unit/batch download is intentionally deferred.
 - Genealodzy Skanoteka act resolution supports positive numeric act numbers and strict exact/range filename conventions only.
 - The package starts from a known scan-resource/catalog URL. Discovering the correct remote collection solely from parish/year/type is intentionally outside the initial API and can be introduced later as a segregated capability.
 - Provider HTML changes may require parser updates; provenance hashes and fixture tests make such changes diagnosable.
+- Laravel/MyTree application registration is intentionally not part of P2; that integration belongs to M7.

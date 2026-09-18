@@ -8,7 +8,7 @@ Provider key:
 szukajwarchiwach
 ```
 
-The current P2 implementation supports fixture-backed catalog discovery, deterministic ordinal resolution and per-object asset download for a known current unit URL:
+The completed P2 package implementation supports fixture-backed catalog discovery, deterministic ordinal resolution, per-object asset download, default standalone registry/CLI exposure and compatible serialized output for a known current unit URL:
 
 ```text
 https://www.szukajwarchiwach.gov.pl/jednostka/-/jednostka/<unit-id>
@@ -16,6 +16,18 @@ https://www.szukajwarchiwach.gov.pl/jednostka/-/jednostka/<unit-id>#scan<N>
 ```
 
 The numeric unit identifier and per-object identifier are provider locators. They are not MyTree `SourceId` values, and discovery, resolution or download does not establish historical source identity.
+
+## Registration and routing
+
+The standalone CLI registers `SzukajWArchiwachProvider` together with `GenealodzySkanotekaProvider` through `DefaultScanProviderRegistryFactory`. The factory builds the normal `ScanProviderRegistry`; callers do not switch on provider keys or hosts themselves.
+
+Routing support is deliberately narrow. Szukaj w Archiwach matches the current numeric-unit URL family on `www.szukajwarchiwach.gov.pl`. A legacy locator such as:
+
+```text
+https://szukajwarchiwach.pl/54/744/0/6.1/47/str/1/3/15/
+```
+
+is not claimed by the provider and is not mechanically rewritten. Such legacy values remain useful provenance until a separately specified reconciliation strategy can resolve them safely.
 
 ## Catalog discovery
 
@@ -49,7 +61,7 @@ Szukaj w Archiwach deep links use a browser fragment such as:
 
 The fragment is a locator hint, not an asset URL. Resolution therefore parses the requested positive ordinal, discovers or reuses the current unit catalog, and matches the requested value against the catalog entry's explicit `scan_ordinal` metadata.
 
-Package callers may alternatively supply the positive decimal ordinal through `ScanLocatorHints::scanNumberRaw` when the resource URL does not contain a fragment. If both the URL fragment and `scanNumberRaw` are present, they must agree. Conflicting raw hints are preserved on the request and resolution returns `unresolved` instead of choosing one silently.
+Package/CLI callers may alternatively supply the positive decimal ordinal through `ScanLocatorHints::scanNumberRaw` / `--scan-number=<N>` when the resource URL does not contain a fragment. If both the URL fragment and `scanNumberRaw` are present, they must agree. Conflicting raw hints are preserved on the request and resolution returns `unresolved` instead of choosing one silently.
 
 Resolution outcomes are explicit:
 
@@ -97,7 +109,29 @@ The public scan URL is fetched through the shared HTTP boundary. The built-in `N
 
 The response must validate as a supported image MIME type. Storage receives a deterministic provider-local filename derived from unit/object identity and MIME extension; file size and SHA-256 remain properties of the stored asset. `mytree.downloaded-scan.v1` is unchanged.
 
-## Metadata and provenance
+## CLI
+
+The existing provider-neutral commands expose the full workflow:
+
+```bash
+php bin/mytree-scan providers
+
+php bin/mytree-scan discover \
+  --url="https://www.szukajwarchiwach.gov.pl/jednostka/-/jednostka/<UNIT_ID>"
+
+php bin/mytree-scan resolve \
+  --url="https://www.szukajwarchiwach.gov.pl/jednostka/-/jednostka/<UNIT_ID>#scan42"
+
+php bin/mytree-scan download \
+  --url="https://www.szukajwarchiwach.gov.pl/jednostka/-/jednostka/<UNIT_ID>#scan42" \
+  --output=var/scans
+```
+
+`resolve` and `download` also accept `--scan-number=<N>` with a fragment-free current unit URL. `discover --format=json`, resolution output and download output use the existing structured serialization contracts; no Szukaj-w-Archiwach-specific orchestration command is introduced.
+
+The human-readable discovery table uses provider-neutral columns (`REMOTE ID`, `LABEL`, optional `REMOTE FILENAME`, `LOCATOR`, `VIEWER URL`) so providers without a published remote filename remain usable.
+
+## Metadata, serialization and provenance
 
 The catalog parser preserves raw label/value pairs and maps common public labels when recognized, including:
 
@@ -128,7 +162,7 @@ unit metadata + raw fields
 discovery strategy
 ```
 
-A downloaded result additionally preserves through the existing serialized contract:
+Resolution additionally preserves the original request/locator inputs, requested ordinal, candidates, selected `AvailableScan` and therefore exact `scan_ordinal` / object identity. A downloaded result preserves through the existing serialized contract:
 
 ```text
 original resource URL (including locator fragment when supplied)
@@ -140,10 +174,18 @@ MIME type
 stored filename/path
 byte size
 SHA-256
-catalog provenance including unit/object context and access-rights metadata
+catalog provenance including unit metadata and access-rights metadata
 ```
 
-Legacy `szukajwarchiwach.pl` URLs are not mechanically rewritten by this adapter. Current-unit discovery requires the current numeric-unit URL family.
+The existing contracts remain sufficient and unchanged:
+
+```text
+mytree.scan-catalog.v1
+mytree.scan-resolution.v1
+mytree.downloaded-scan.v1
+```
+
+No incompatible public shape change is required for P2.
 
 ## Network behavior
 
@@ -164,35 +206,28 @@ Normal automated tests never access the live service.
 
 Fixtures under `tests/fixtures/szukajwarchiwach/` are sanitized structural fixtures based on the public HTML/URL behavior recorded during feasibility work. They cover metadata-rich, zero-scan, paginated and malformed catalog structures plus representative per-object viewer structures.
 
-Ordinal parsing/resolution tests cover:
-
-- the accepted `#scan42` form,
-- first/last valid ordinals,
-- out-of-range discovery mismatches,
-- malformed/non-positive fragments,
-- missing ordinals,
-- conflicting raw locator hints,
-- deliberately non-unique catalog ordinal metadata producing `ambiguous`.
-
-Download tests additionally cover:
-
-- exact object-viewer URL derivation,
-- extraction of the supported public `/skan/-/skan/` route,
-- ignoring an undocumented internal API route,
-- deterministic image MIME/size/SHA-256 and storage filename,
-- missing/changed public download control,
-- transient `503` / `429` retry behavior with zero test sleeps,
-- rejection of non-image responses,
-- preservation of catalog access-rights metadata in `DownloadedScan` provenance.
-
-Tests intentionally avoid live service availability and undocumented internal API endpoints.
-
-## Deferred P2 work
-
-The following capabilities remain outside this step:
+Provider-specific tests cover ordinal parsing/resolution, viewer/download extraction, retry behavior and malformed responses. Package-level integration tests additionally cover:
 
 ```text
-CLI/default composition-root registration
+current unit URL
+  → ScanProviderRegistry selects szukajwarchiwach
+  → DiscoverScans
+  → ResolveScan (#scanN)
+  → DownloadScan
+  → v1 serialized outputs + provenance
+```
+
+They also verify that the default standalone registry still routes Genealodzy Skanoteka correctly and does not claim legacy `szukajwarchiwach.pl` URLs. The `providers` CLI listing is tested without network access.
+
+## Deferred work / non-goals
+
+The completed P2 package does not implement:
+
+```text
 arbitrary signature -> unit search
 optimized whole-unit/batch download
+legacy URL -> current unit reconciliation
+MyTree/Laravel application registration
 ```
+
+Laravel/MyTree composition, persistence and Source Acquisition integration belong to milestone M7. The core package remains framework-independent.
