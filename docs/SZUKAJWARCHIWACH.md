@@ -213,6 +213,7 @@ This is an undocumented public-web integration. Network behavior is deliberately
 - successful validated catalogs are cached in-memory for the same resource URL,
 - malformed, incomplete or cardinality-mismatched responses fail explicitly and are never cached as successful discovery,
 - absence of the historical `Skany (N)` label is not by itself an error when ordered scan entries and official pagination can be enumerated safely,
+- presentation metadata such as the unit title is preserved when recognizable but is not required to resolve an otherwise deterministic unit/object/ordinal catalog,
 - unexpected viewer structure and non-image download responses fail explicitly.
 
 Normal automated tests never access the live service.

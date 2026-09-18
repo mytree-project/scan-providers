@@ -75,6 +75,40 @@ final class SzukajWArchiwachOfficialLinksTest extends TestCase
         self::assertSame([self::PUBLIC_SCAN_URL], $http->requests);
     }
 
+    public function testUnitTitleIsOptionalForDeterministicOrdinalResolution(): void
+    {
+        $http = new FakeHttpClient();
+        $html = <<<'HTML'
+<!doctype html>
+<html lang="pl"><body>
+<h3>Skany (3)</h3>
+<a data-plikid="700001">Skan 1</a>
+<a data-plikid="700002">Skan 2</a>
+<a data-plikid="700003">Skan 3</a>
+</body></html>
+HTML;
+        $http->respond(self::UNIT_URL, new HttpResponse(
+            200,
+            ['content-type' => ['text/html']],
+            $html,
+            self::UNIT_URL,
+        ));
+
+        $registry = new ScanProviderRegistry([$this->provider($http)]);
+        $resolution = (new ResolveScan($registry))->execute(new ResolveScanRequest(
+            new ScanResourceReference(self::UNIT_URL),
+            new ScanLocatorHints(scanNumberRaw: '2'),
+        ));
+
+        self::assertSame(ScanResolutionStatus::Resolved, $resolution->status);
+        self::assertNotNull($resolution->resolved);
+        self::assertSame('700002', $resolution->resolved->scan->remoteId);
+        self::assertArrayNotHasKey(
+            'title',
+            $resolution->resolved->catalogProvenance->details['unit_metadata'],
+        );
+    }
+
     public function testItEnumeratesOfficialLiferayPaginationWhenDeclaredScanCountIsAbsent(): void
     {
         $http = new FakeHttpClient();

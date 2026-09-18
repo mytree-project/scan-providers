@@ -153,9 +153,6 @@ final class SzukajWArchiwachProvider implements ScanProviderInterface, ScanCatal
         if ($firstPage === null) {
             throw new UnexpectedProviderResponseException('Szukaj w Archiwach catalog did not return a parseable first page.');
         }
-        if ($firstPage->title === null) {
-            throw new UnexpectedProviderResponseException('Szukaj w Archiwach unit page did not expose a recognizable unit title.');
-        }
         if ($expectedCount === null && $rawEntries === []) {
             throw new UnexpectedProviderResponseException(
                 'Szukaj w Archiwach unit page exposed neither a declared scan count nor recognizable scan entries.',
@@ -378,12 +375,14 @@ final class SzukajWArchiwachProvider implements ScanProviderInterface, ScanCatal
      * @param array<string,string> $rawMetadata
      * @return array<string,mixed>
      */
-    private function unitMetadata(string $title, array $rawMetadata): array
+    private function unitMetadata(?string $title, array $rawMetadata): array
     {
         $metadata = [
-            'title' => $title,
             'raw_fields' => $rawMetadata,
         ];
+        if ($title !== null) {
+            $metadata['title'] = $title;
+        }
         $mapping = [
             'Sygnatura' => 'signature',
             'Reference code' => 'signature',
