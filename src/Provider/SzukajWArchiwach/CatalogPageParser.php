@@ -80,12 +80,10 @@ final class CatalogPageParser
         }
 
         foreach ($anchors as $anchor) {
-            $class = $this->attribute($anchor[1], 'class');
-            if ($class === null || !$this->hasClass($class, 'load-photo-slider')) {
+            $objectId = $this->attribute($anchor[1], 'data-plikid');
+            if ($objectId === null) {
                 continue;
             }
-
-            $objectId = $this->attribute($anchor[1], 'data-plikid');
             if ($objectId === null || !preg_match('~^[1-9]\d*$~', $objectId)) {
                 throw new UnexpectedProviderResponseException(
                     'Szukaj w Archiwach scan entry did not expose a positive numeric data-plikid object locator.',

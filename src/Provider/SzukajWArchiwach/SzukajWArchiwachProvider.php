@@ -156,6 +156,11 @@ final class SzukajWArchiwachProvider implements ScanProviderInterface, ScanCatal
         if ($firstPage->title === null) {
             throw new UnexpectedProviderResponseException('Szukaj w Archiwach unit page did not expose a recognizable unit title.');
         }
+        if ($expectedCount === null && $rawEntries === []) {
+            throw new UnexpectedProviderResponseException(
+                'Szukaj w Archiwach unit page exposed neither a declared scan count nor recognizable scan entries.',
+            );
+        }
         if ($expectedCount !== null && count($rawEntries) !== $expectedCount) {
             throw new UnexpectedProviderResponseException(sprintf(
                 'Szukaj w Archiwach catalog declared %d scan(s) but complete enumeration found %d.',
@@ -247,7 +252,7 @@ final class SzukajWArchiwachProvider implements ScanProviderInterface, ScanCatal
                 providerKey: self::KEY,
                 request: $request,
                 reason: 'resource_not_supported',
-                trace: ['Resource is not a supported Szukaj w Archiwach unit URL.'],
+                trace: ['Resource is not a supported Szukaj w Archiwach unit or public scan URL.'],
             );
         }
 
@@ -332,12 +337,12 @@ final class SzukajWArchiwachProvider implements ScanProviderInterface, ScanCatal
 
     private function unitId(ScanResourceReference $resource): ?string
     {
-        if ($resource->host() !== 'www.szukajwarchiwach.gov.pl') {
+        if (!in_array($resource->host(), ['www.szukajwarchiwach.gov.pl', 'szukajwarchiwach.gov.pl'], true)) {
             return null;
         }
 
         $path = (string) parse_url($resource->url, PHP_URL_PATH);
-        if (!preg_match('~^/jednostka/-/jednostka/([1-9]\\d*)/?$~', $path, $match)) {
+        if (!preg_match('~^/(?:en/|de/)?jednostka/-/jednostka/([1-9]\\d*)/?$~', $path, $match)) {
             return null;
         }
 
