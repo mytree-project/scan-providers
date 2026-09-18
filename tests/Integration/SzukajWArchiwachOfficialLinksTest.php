@@ -118,6 +118,31 @@ HTML,
         self::assertSame([self::UNIT_URL, $catalogUrl], $http->requests);
     }
 
+    public function testItReportsImpervaSoftBlockInsteadOfTreatingItAsProviderHtml(): void
+    {
+        $http = new FakeHttpClient();
+        $body = '<html><body>Request unsuccessful. Incapsula incident ID: 123456789</body></html>';
+        $http->respond(self::UNIT_URL, new HttpResponse(
+            200,
+            [
+                'content-type' => ['text/html'],
+                'content-length' => [(string) strlen($body)],
+                'x-iinfo' => ['14-39368798-0 0NNN'],
+                'set-cookie' => [
+                    'visid_incap_3269802=redacted; path=/; Domain=.szukajwarchiwach.gov.pl',
+                    'incap_ses_878_3269802=redacted; path=/; Domain=.szukajwarchiwach.gov.pl',
+                ],
+            ],
+            $body,
+            self::UNIT_URL,
+        ));
+
+        $this->expectExceptionMessage('Imperva/Incapsula anti-bot protection');
+        $this->expectExceptionMessage('browser-established session');
+
+        $this->provider($http)->discoverScans(new ScanResourceReference(self::UNIT_URL));
+    }
+
     public function testUnrecognizedCatalogReportsSafeStructuralDiagnostics(): void
     {
         $http = new FakeHttpClient();

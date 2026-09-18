@@ -45,7 +45,7 @@ szukajwarchiwach
 host: www.szukajwarchiwach.gov.pl
 ```
 
-The P2 package implementation supports catalog discovery for known current unit URLs, deterministic ordinal resolution from `#scan<N>` deep links or explicit positive `scanNumberRaw` hints, per-object asset download, and official direct `/skan/-/skan/<opaque-token>` links. A direct public scan URL is already an exact locator: `resolve` returns it as resolved without catalog discovery and `download` validates/stores that public asset directly. A unit/ordinal flow still discovers the exact object viewer first and then extracts the same public scan-link family.
+The P2 package implementation contains fixture-backed catalog discovery for known current unit URLs, deterministic ordinal resolution from `#scan<N>` deep links or explicit positive `scanNumberRaw` hints, per-object asset download, and official direct `/skan/-/skan/<opaque-token>` links. Current live unit/catalog HTTP requests can be intercepted by the portal's Imperva/Incapsula anti-bot layer; this condition is detected explicitly rather than being misreported as changed provider markup. A direct public scan URL is already an exact locator: `resolve` returns it as resolved without catalog discovery and `download` validates/stores that public asset directly. A unit/ordinal flow still discovers the exact object viewer first and then extracts the same public scan-link family.
 
 The adapter does not use undocumented `/o/pliki-api/...` endpoints as its download contract. For unit discovery it preserves the numeric unit ID, ordered scan ordinals, provider object/file locators and unit metadata/provenance. When `Skany (N)` / `Scans (N)` is present it is verified against complete enumeration; when current HTML omits that label, the adapter follows the official `_Jednostka_cur` pagination and records the enumerated cardinality explicitly. Zero-scan and paginated units are supported without silently treating unrecognized markup as an empty catalog. Legacy `szukajwarchiwach.pl` URLs are retained as external provenance/locator values and are not mechanically rewritten into current service URLs.
 
@@ -232,6 +232,7 @@ Normal tests use local fixtures and fake HTTP responses. CI does not depend on t
 
 ## Current limitations
 
+- Live Szukaj w Archiwach unit/catalog requests may be soft-blocked by the service's current Imperva/Incapsula anti-bot layer (HTTP 200 with a tiny challenge page). The standalone HTTP client detects this explicitly and does not attempt to bypass it; browser-established-session integration is separate future work.
 - Szukaj w Archiwach starts from a known current numeric-unit URL; arbitrary archival-signature-to-unit search is not implemented.
 - Legacy `szukajwarchiwach.pl` URLs are not mechanically migrated by the scan provider.
 - Szukaj w Archiwach uses per-object acquisition; optimized whole-unit/batch download is intentionally deferred.

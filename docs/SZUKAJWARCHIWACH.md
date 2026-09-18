@@ -8,7 +8,7 @@ Provider key:
 szukajwarchiwach
 ```
 
-The completed P2 package implementation supports fixture-backed catalog discovery, deterministic ordinal resolution, per-object asset download, default standalone registry/CLI exposure and compatible serialized output for a known current unit URL:
+The P2 package implementation provides fixture-backed catalog discovery, deterministic ordinal resolution, per-object asset download, default standalone registry/CLI exposure and compatible serialized output for a known current unit URL. Live compatibility testing on 2026-09-18 additionally established that current unit/catalog requests from a simple non-browser HTTP client can be soft-blocked by Imperva/Incapsula:
 
 ```text
 https://www.szukajwarchiwach.gov.pl/jednostka/-/jednostka/<unit-id>
@@ -204,7 +204,11 @@ No incompatible public shape change is required for P2.
 
 ## Network behavior
 
-This is an undocumented public-web integration. Network behavior is deliberately bounded:
+This is an undocumented public-web integration. Live testing on 2026-09-18 found that the current service can return an Imperva/Incapsula soft-block page to the standalone HTTP client: HTTP 200, a very small HTML body, `x-iinfo`, and `visid_incap_*` / `incap_ses_*` cookies instead of the requested unit/catalog HTML. External observations of the current service report the same protection, and existing scraper tooling describes the service as stateful and session-dependent.
+
+The provider detects this response explicitly and fails with a dedicated anti-bot/session message. It does **not** try to disguise the client, solve challenges, import browser cookies, or otherwise bypass the protection. A future browser-established-session adapter, if accepted for MyTree, must be designed separately from the framework-independent HTTP provider.
+
+Network behavior is otherwise deliberately bounded:
 
 - requests are sequential,
 - pagination has a hard maximum,
@@ -238,9 +242,10 @@ They also verify official direct `/skan/-/skan/<opaque-token>` resolution/downlo
 
 ## Deferred work / non-goals
 
-The completed P2 package does not implement:
+The P2 package does not implement:
 
 ```text
+browser-established session / Imperva-compatible live catalog acquisition
 arbitrary signature -> unit search
 optimized whole-unit/batch download
 legacy URL -> current unit reconciliation
