@@ -118,6 +118,32 @@ HTML,
         self::assertSame([self::UNIT_URL, $catalogUrl], $http->requests);
     }
 
+    public function testUnrecognizedCatalogReportsSafeStructuralDiagnostics(): void
+    {
+        $http = new FakeHttpClient();
+        $catalogUrl = self::UNIT_URL
+            . '?_Jednostka_delta=200&_Jednostka_resetCur=false&_Jednostka_cur=1'
+            . '&_Jednostka_id_jednostki=990004';
+
+        $http->respond(self::UNIT_URL, new HttpResponse(
+            200,
+            [],
+            '<html><body>shell</body></html>',
+            self::UNIT_URL,
+        ));
+        $http->respond($catalogUrl, new HttpResponse(
+            200,
+            [],
+            '<html><body>100 Wpisy <input name="skan_-id-pliku"></body></html>',
+            $catalogUrl,
+        ));
+
+        $this->expectExceptionMessage('skan_-id-pliku=yes');
+        $this->expectExceptionMessage('Wpisy=yes');
+
+        $this->provider($http)->discoverScans(new ScanResourceReference(self::UNIT_URL));
+    }
+
     public function testUnitTitleIsOptionalForDeterministicOrdinalResolution(): void
     {
         $http = new FakeHttpClient();

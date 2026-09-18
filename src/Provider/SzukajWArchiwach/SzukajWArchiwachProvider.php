@@ -110,6 +110,8 @@ final class SzukajWArchiwachProvider implements ScanProviderInterface, ScanCatal
         $firstPage = null;
         $expectedCount = null;
         $pageNumber = 0;
+        $lastResponseUrl = null;
+        $lastResponseBody = '';
 
         while ($nextPageUrl !== null) {
             if (isset($visited[$nextPageUrl])) {
@@ -123,6 +125,8 @@ final class SzukajWArchiwachProvider implements ScanProviderInterface, ScanCatal
             }
 
             $response = $this->fetchPage($nextPageUrl);
+            $lastResponseUrl = $nextPageUrl;
+            $lastResponseBody = $response->body;
             $parsed = $this->parser->parse($response->body, $nextPageUrl);
 
             if (
@@ -171,9 +175,10 @@ final class SzukajWArchiwachProvider implements ScanProviderInterface, ScanCatal
             throw new UnexpectedProviderResponseException('Szukaj w Archiwach catalog did not return a parseable first page.');
         }
         if ($expectedCount === null && $rawEntries === []) {
-            throw new UnexpectedProviderResponseException(
-                'Szukaj w Archiwach unit page exposed neither a declared scan count nor recognizable scan entries.',
-            );
+            throw new UnexpectedProviderResponseException(sprintf(
+                'Szukaj w Archiwach catalog exposed neither a declared scan count nor recognizable scan entries. %s',
+                $this->catalogDiagnostics($lastResponseUrl, $lastResponseBody),
+            ));
         }
         if ($expectedCount !== null && count($rawEntries) !== $expectedCount) {
             throw new UnexpectedProviderResponseException(sprintf(
@@ -440,6 +445,22 @@ final class SzukajWArchiwachProvider implements ScanProviderInterface, ScanCatal
         }
 
         return $metadata;
+    }
+
+    private function catalogDiagnostics(?string $url, string $body): string
+    {
+        $markers = [];
+        foreach (['data-plikid', 'skan_-id-pliku', 'load-photo-slider', 'jednostka-skan', 'Wpisy', '_Jednostka_'] as $marker) {
+            $markers[] = $marker . '=' . (str_contains($body, $marker) ? 'yes' : 'no');
+        }
+
+        return sprintf(
+            '[url=%s bytes=%d sha256=%s markers:%s]',
+            $url ?? 'unknown',
+            strlen($body),
+            hash('sha256', $body),
+            implode(',', $markers),
+        );
     }
 
     private function sleepMilliseconds(int $milliseconds): void
