@@ -32,6 +32,11 @@ final readonly class SzukajWArchiwachAssetDownloader
             throw new \InvalidArgumentException('Resolved scan belongs to a different provider.');
         }
 
+        $directToken = $scan->scan->metadata['public_scan_token'] ?? null;
+        if (($scan->scan->metadata['direct_public_scan_url'] ?? false) === true && is_string($directToken)) {
+            return $this->downloadDirectPublicScan($scan, $directToken, $storage);
+        }
+
         [$unitId, $objectId] = $this->assertResolvedObject($scan);
         $viewerUrl = $scan->scan->viewerUrl;
         $viewer = $this->fetcher->get($viewerUrl, [
@@ -72,6 +77,57 @@ final readonly class SzukajWArchiwachAssetDownloader
             resolutionStrategy: $scan->strategy,
             catalogProvenance: $scan->catalogProvenance,
         );
+    }
+
+    private function downloadDirectPublicScan(
+        ResolvedScan $scan,
+        string $token,
+        ScanAssetStorageInterface $storage,
+    ): DownloadedScan {
+        if (preg_match('~^[A-Za-z0-9_-]+$~D', $token) !== 1) {
+            throw new \InvalidArgumentException('Resolved Szukaj w Archiwach direct scan token is invalid.');
+        }
+        if ($scan->scan->viewerUrl !== $scan->resource->url) {
+            throw new \InvalidArgumentException('Resolved direct Szukaj w Archiwach scan URL does not match its resource URL.');
+        }
+
+        $binary = $this->fetcher->get($scan->resource->url, [
+            'Accept' => 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+        ]);
+        $mimeType = $this->mimeTypeDetector->detect($binary->body, $binary->firstHeader('content-type'));
+        if ($mimeType === null) {
+            throw new UnexpectedProviderResponseException('Downloaded Szukaj w Archiwach response is not a recognized image asset.');
+        }
+
+        $stored = $storage->store(
+            $this->suggestedDirectFilename($token, $mimeType),
+            $binary->body,
+        );
+
+        return new DownloadedScan(
+            providerKey: SzukajWArchiwachProvider::KEY,
+            asset: $stored,
+            mimeType: $mimeType,
+            resourceUrl: $scan->resource->url,
+            viewerUrl: $scan->scan->viewerUrl,
+            downloadUrl: $scan->resource->url,
+            retrievedAt: $this->clock->now()->format(DATE_ATOM),
+            resolutionStrategy: $scan->strategy,
+            catalogProvenance: $scan->catalogProvenance,
+        );
+    }
+
+    private function suggestedDirectFilename(string $token, string $mimeType): string
+    {
+        $extension = match ($mimeType) {
+            'image/jpeg' => 'jpg',
+            'image/png' => 'png',
+            'image/webp' => 'webp',
+            'image/tiff' => 'tif',
+            default => 'bin',
+        };
+
+        return sprintf('szukajwarchiwach-scan-%s.%s', substr(hash('sha256', $token), 0, 24), $extension);
     }
 
     /** @return array{0:string,1:string} */

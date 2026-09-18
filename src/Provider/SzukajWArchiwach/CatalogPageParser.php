@@ -11,15 +11,8 @@ final class CatalogPageParser
 {
     public function parse(string $html, string $pageUrl): ParsedCatalogPage
     {
-        $scanCount = $this->scanCount($html);
-        if ($scanCount === null) {
-            throw new UnexpectedProviderResponseException(
-                'Szukaj w Archiwach unit page did not expose a recognizable "Skany (N)" / "Scans (N)" count.',
-            );
-        }
-
         return new ParsedCatalogPage(
-            scanCount: $scanCount,
+            scanCount: $this->scanCount($html),
             title: $this->title($html),
             rawMetadata: $this->metadata($html),
             scanEntries: $this->scanEntries($html),
@@ -30,11 +23,14 @@ final class CatalogPageParser
     private function scanCount(string $html): ?int
     {
         $text = $this->text($html);
-        if (!preg_match('~(?:Skany|Scans)\s*\(\s*(\d+)\s*\)~iu', $text, $match)) {
-            return null;
+        if (preg_match('~(?:Skany|Scans)\\s*\\(\\s*(\\d+)\\s*\\)~iu', $text, $match)) {
+            return (int) $match[1];
+        }
+        if (preg_match('~(?:Skany|Scans)\\s*[:\\-]?\\s*(\\d+)~iu', $text, $match)) {
+            return (int) $match[1];
         }
 
-        return (int) $match[1];
+        return null;
     }
 
     private function title(string $html): ?string
@@ -107,14 +103,42 @@ final class CatalogPageParser
 
     private function nextPageUrl(string $html, string $pageUrl): ?string
     {
-        if (!preg_match_all('~<a\b([^>]*)>(.*?)</a>~isu', $html, $anchors, PREG_SET_ORDER)) {
+        if (!preg_match_all('~<a\\b([^>]*)>(.*?)</a>~isu', $html, $anchors, PREG_SET_ORDER)) {
             return null;
         }
 
+        $currentQuery = Url::query($pageUrl);
+        $currentPage = $this->positiveInt($currentQuery['_Jednostka_cur'] ?? null) ?? 1;
+
         foreach ($anchors as $anchor) {
-            $ariaLabel = $this->attribute($anchor[1], 'aria-label');
-            $isNext = preg_match('~\bicon-caret-right\b~iu', $anchor[2]) === 1
-                || in_array(strtolower(trim((string) $ariaLabel)), ['next', 'next page'], true);
+            $href = $this->attribute($anchor[1], 'href');
+            if ($href === null) {
+                continue;
+            }
+
+            $resolved = Url::resolve($pageUrl, $href);
+            if ($resolved === null) {
+                continue;
+            }
+
+            $query = Url::query($resolved);
+            $candidatePage = $this->positiveInt($query['_Jednostka_cur'] ?? null);
+            if ($candidatePage === $currentPage + 1) {
+                return $resolved;
+            }
+        }
+
+        foreach ($anchors as $anchor) {
+            $rel = strtolower(trim((string) $this->attribute($anchor[1], 'rel')));
+            $ariaLabel = strtolower(trim((string) $this->attribute($anchor[1], 'aria-label')));
+            $title = strtolower(trim((string) $this->attribute($anchor[1], 'title')));
+            $isNext = $rel === 'next'
+                || in_array($ariaLabel, ['next', 'next page', 'następna', 'następna strona', 'dalej'], true)
+                || in_array($title, ['next', 'next page', 'następna', 'następna strona', 'dalej'], true)
+                || preg_match(
+                    '~\\b(?:icon-caret-right|icon-angle-right|icon-chevron-right|lexicon-icon-angle-right)\\b~iu',
+                    $anchor[2],
+                ) === 1;
             if (!$isNext) {
                 continue;
             }
@@ -128,6 +152,16 @@ final class CatalogPageParser
         }
 
         return null;
+    }
+
+    private function positiveInt(mixed $value): ?int
+    {
+        if (!is_scalar($value) || !preg_match('~^[1-9]\\d*$~', (string) $value)) {
+            return null;
+        }
+
+        $validated = filter_var((string) $value, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+        return is_int($validated) ? $validated : null;
     }
 
     private function attribute(string $attributes, string $name): ?string
