@@ -35,6 +35,7 @@ is not claimed by the provider and is not mechanically rewritten. Such legacy va
 `SzukajWArchiwachProvider` implements `ScanCatalogDiscoveryInterface`. Discovery:
 
 - reads the public unit HTML rather than an undocumented service API,
+- if the bare unit page is only a presentation shell with no scan entries/count, retries discovery through the portal's own `_Jednostka_delta=200`, `_Jednostka_cur=1`, `_Jednostka_id_jednostki=<id>` catalog URL,
 - uses `Skany (N)` / `Scans (N)` as the declared digital scan cardinality when that label is present,
 - accepts an explicit declared zero as a valid empty catalog,
 - follows the public catalog pagination in order, including the current Liferay-style `_Jednostka_cur` links,

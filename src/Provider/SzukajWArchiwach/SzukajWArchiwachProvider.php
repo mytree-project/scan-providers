@@ -98,8 +98,11 @@ final class SzukajWArchiwachProvider implements ScanProviderInterface, ScanCatal
         }
 
         $unitUrl = $this->canonicalUnitUrl($unitId);
+        $catalogStartUrl = $this->catalogStartUrl($unitId);
         $nextPageUrl = $unitUrl;
         $visited = [];
+        $bootstrapResponseSha256 = null;
+        $bootstrapFallbackUsed = false;
         $rawEntries = [];
         $seenObjectIds = [];
         $pageHashes = [];
@@ -109,22 +112,36 @@ final class SzukajWArchiwachProvider implements ScanProviderInterface, ScanCatal
         $pageNumber = 0;
 
         while ($nextPageUrl !== null) {
-            ++$pageNumber;
-            if ($pageNumber > $this->maxPages) {
-                throw new UnexpectedProviderResponseException('Szukaj w Archiwach catalog exceeded the configured pagination limit.');
-            }
             if (isset($visited[$nextPageUrl])) {
                 throw new UnexpectedProviderResponseException('Szukaj w Archiwach catalog pagination entered a URL loop.');
             }
             $visited[$nextPageUrl] = true;
             $this->assertUnitPageUrl($nextPageUrl, $unitId);
 
-            if ($pageNumber > 1) {
+            if (count($visited) > 1) {
                 $this->sleepMilliseconds($this->requestPacingMilliseconds);
             }
 
             $response = $this->fetchPage($nextPageUrl);
             $parsed = $this->parser->parse($response->body, $nextPageUrl);
+
+            if (
+                $nextPageUrl === $unitUrl
+                && $parsed->scanCount === null
+                && $parsed->scanEntries === []
+                && $parsed->nextPageUrl === null
+            ) {
+                $bootstrapResponseSha256 = hash('sha256', $response->body);
+                $bootstrapFallbackUsed = true;
+                $nextPageUrl = $catalogStartUrl;
+                continue;
+            }
+
+            ++$pageNumber;
+            if ($pageNumber > $this->maxPages) {
+                throw new UnexpectedProviderResponseException('Szukaj w Archiwach catalog exceeded the configured pagination limit.');
+            }
+
             $firstPage ??= $parsed;
             if ($parsed->scanCount !== null) {
                 $expectedCount ??= $parsed->scanCount;
@@ -204,6 +221,9 @@ final class SzukajWArchiwachProvider implements ScanProviderInterface, ScanCatal
                     'discovery_strategy' => 'public_unit_html_scan_catalog',
                     'unit_id' => $unitId,
                     'canonical_unit_url' => $unitUrl,
+                    'catalog_start_url' => $catalogStartUrl,
+                    'bootstrap_fallback_used' => $bootstrapFallbackUsed,
+                    'bootstrap_response_sha256' => $bootstrapResponseSha256,
                     'scan_count' => count($rawEntries),
                     'declared_scan_count' => $expectedCount,
                     'scan_count_source' => $expectedCount === null ? 'enumerated_catalog' : 'declared_and_verified',
@@ -349,6 +369,15 @@ final class SzukajWArchiwachProvider implements ScanProviderInterface, ScanCatal
     private function canonicalUnitUrl(string $unitId): string
     {
         return 'https://www.szukajwarchiwach.gov.pl/jednostka/-/jednostka/' . $unitId;
+    }
+
+    private function catalogStartUrl(string $unitId): string
+    {
+        return $this->canonicalUnitUrl($unitId)
+            . '?_Jednostka_delta=200'
+            . '&_Jednostka_resetCur=false'
+            . '&_Jednostka_cur=1'
+            . '&_Jednostka_id_jednostki=' . rawurlencode($unitId);
     }
 
     private function objectViewerUrl(string $unitId, string $objectId): string
