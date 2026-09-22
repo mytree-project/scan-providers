@@ -13,6 +13,7 @@ final readonly class RetryingHttpFetcher
 {
     public function __construct(
         private HttpClientInterface $http,
+        private ?BrowserSessionClientInterface $browserSessionClient = null,
         private int $maxAttempts = 3,
         private int $retryBackoffMilliseconds = 500,
     ) {
@@ -43,9 +44,22 @@ final readonly class RetryingHttpFetcher
 
             if ($response->status >= 200 && $response->status < 300) {
                 if ($this->isImpervaSoftBlock($response)) {
+                    if ($this->browserSessionClient !== null) {
+                        $browserResponse = $this->browserSessionClient->fetchPage($url);
+                        if ($browserResponse->status >= 200 && $browserResponse->status < 300) {
+                            return $browserResponse;
+                        }
+
+                        throw new UnexpectedProviderResponseException(sprintf(
+                            'Szukaj w Archiwach browser session returned HTTP %d for %s.',
+                            $browserResponse->status,
+                            $url,
+                        ));
+                    }
+
                     throw new UnexpectedProviderResponseException(sprintf(
                         'Szukaj w Archiwach blocked the HTTP client with Imperva/Incapsula anti-bot protection for %s. '
-                        . 'The standalone HTTP client cannot continue this live request without a browser-established session.',
+                        . 'Browser-session transport is not configured.',
                         $url,
                     ));
                 }
