@@ -27,7 +27,7 @@ final class SzukajWArchiwachProvider implements ScanProviderInterface, ScanCatal
 {
     public const KEY = 'szukajwarchiwach';
     public const VERSION = '0.1.0';
-    public const DIRECT_PUBLIC_SCAN_STRATEGY = 'direct_public_scan_url';
+    public const PUBLIC_SCAN_VIEWER_STRATEGY = 'public_scan_viewer_url';
 
     /** @var array<string,ScanCatalog> */
     private array $catalogCache = [];
@@ -259,12 +259,12 @@ final class SzukajWArchiwachProvider implements ScanProviderInterface, ScanCatal
                     providerKey: self::KEY,
                     resource: $request->resource,
                     scan: $scan,
-                    strategy: self::DIRECT_PUBLIC_SCAN_STRATEGY,
+                    strategy: self::PUBLIC_SCAN_VIEWER_STRATEGY,
                     matchedHintRaw: $request->resource->url,
                     catalogProvenance: $provenance,
                 ),
-                strategy: self::DIRECT_PUBLIC_SCAN_STRATEGY,
-                trace: ['Official public scan URL is already an exact scan locator.'],
+                strategy: self::PUBLIC_SCAN_VIEWER_STRATEGY,
+                trace: ['Official public scan viewer URL is already an exact scan locator; raw image acquisition may require browser-aware transport.'],
             );
         }
 
@@ -299,13 +299,13 @@ final class SzukajWArchiwachProvider implements ScanProviderInterface, ScanCatal
         return new AvailableScan(
             providerKey: self::KEY,
             remoteId: $token,
-            label: 'Direct Szukaj w Archiwach scan',
+            label: 'Szukaj w Archiwach scan viewer',
             remoteFilename: '',
             viewerUrl: $resource->url,
-            locators: [new ScanLocator(ScanLocator::OPAQUE, 'public-scan:' . $token)],
+            locators: [new ScanLocator(ScanLocator::OPAQUE, 'public-scan-viewer:' . $token)],
             metadata: [
-                'public_scan_token' => $token,
-                'direct_public_scan_url' => true,
+                'public_scan_viewer_token' => $token,
+                'public_scan_viewer_url' => true,
                 'remote_filename_available' => false,
             ],
         );
@@ -318,11 +318,11 @@ final class SzukajWArchiwachProvider implements ScanProviderInterface, ScanCatal
             providerVersion: self::VERSION,
             resourceUrl: $resource->url,
             retrievedAt: $this->clock->now()->format(DATE_ATOM),
-            responseSha256: hash('sha256', "public-scan-locator\n" . $resource->url),
+            responseSha256: hash('sha256', "public-scan-viewer-locator\n" . $resource->url),
             details: [
-                'discovery_strategy' => self::DIRECT_PUBLIC_SCAN_STRATEGY,
-                'public_scan_token' => $token,
-                'response_sha256_basis' => 'public_scan_locator_without_network_fetch',
+                'discovery_strategy' => self::PUBLIC_SCAN_VIEWER_STRATEGY,
+                'public_scan_viewer_token' => $token,
+                'response_sha256_basis' => 'public_scan_viewer_locator_without_network_fetch',
             ],
         );
     }
