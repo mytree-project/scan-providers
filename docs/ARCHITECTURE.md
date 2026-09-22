@@ -72,6 +72,10 @@ Optional capability for providers that can enumerate scans inside a remote resou
 
 Routing is provider-driven. There is no central switch over known domains. If zero providers match, routing fails explicitly. If more than one provider matches, routing fails as ambiguous instead of silently choosing by registration order.
 
+The standalone CLI uses `DefaultScanProviderRegistryFactory` as a small composition root. The factory registers the completed Genealodzy Skanoteka and Szukaj w Archiwach adapters in the normal registry; it does not duplicate routing rules. Future framework composition roots may register the same provider services independently through dependency injection.
+
+A standalone tool may depend on additional infrastructure without making that infrastructure part of the domain contract. In particular, a provider runtime may compose a browser-session transport implemented with Playwright/Chromium while `ScanProviderInterface`, `ScanCatalogDiscoveryInterface` and the serialized domain shapes remain free of browser-specific types.
+
 ## Genealodzy Skanoteka provider
 
 Routing target:
@@ -92,7 +96,7 @@ anything else -> opaque locator
 
 For download, the provider opens the resolved viewer page, resolves the best matching image/download link and validates that the downloaded response is an image before storing it.
 
-## Szukaj w Archiwach provider — P2 catalog, ordinal resolution and asset download
+## Szukaj w Archiwach provider — completed P2 package capability
 
 Current supported resource family:
 
@@ -113,13 +117,17 @@ Ordinal resolution treats `#scan<N>` as a browser-side locator hint rather than 
 
 Conflicting raw hints, missing/out-of-range ordinals and non-unique catalog matches remain explicit `unresolved` / `ambiguous` / `unsupported` outcomes. The original `ResolveScanRequest`, catalog candidates and catalog provenance remain attached to the result so disagreement between supplied locator data and current discovery is diagnosable.
 
-For download, the provider opens the exact object viewer and extracts one supported public scan link:
+For download, the provider opens the exact object viewer and extracts one supported public scan-viewer link:
 
 ```text
 /skan/-/skan/<opaque-token>
 ```
 
-The token is treated as opaque provider data. The adapter deliberately ignores undocumented `/o/pliki-api/...` routes as public contracts. Missing or non-unique public scan links fail explicitly. The selected public scan URL is fetched through the shared HTTP boundary, validated as an image, stored through `ScanAssetStorageInterface`, and returned with the existing `mytree.downloaded-scan.v1` semantics. A small provider-specific retry collaborator supplies the same bounded transport/`429`/`5xx` policy to catalog, viewer and asset retrieval.
+The token is treated as opaque provider data. Live testing on 2026-09-22 established that this route is an HTML viewer locator rather than the raw image asset. The adapter deliberately ignores undocumented `/o/pliki-api/...` routes as public contracts. Missing or non-unique public viewer links fail explicitly.
+
+The standalone `NativeHttpClient` may receive viewer HTML at the raw-asset step. That outcome is reported explicitly as `ScanCapabilityUnavailableException` requiring browser-aware transport rather than being accepted as an image. A successful browser PoC observed the real JPEG as a separate subresource from `photos.szukajwarchiwach.gov.pl`; the observed URL shape is compatibility evidence, not a stable derivation contract. P2 therefore requires a browser-aware infrastructure transport inside the standalone `scan-providers` runtime. Chromium/Playwright may be an infrastructure dependency while the public/domain contracts remain browser-agnostic. A small provider-specific retry collaborator continues to supply the same bounded transport/`429`/`5xx` policy to normal HTTP requests.
+
+The standalone CLI exposes the provider only through the existing `DiscoverScans`, `ResolveScan` and `DownloadScan` application services. No parallel provider-specific orchestration API exists. `ResolveScan` can resolve an exact public `/skan/...` viewer locator with strategy `public_scan_viewer_url`. The final standalone composition root must select/use browser-aware infrastructure when required so `DownloadScan` can complete the supported live flow. Legacy `szukajwarchiwach.pl` URLs are not claimed or mechanically rewritten by provider routing.
 
 See [SZUKAJWARCHIWACH.md](SZUKAJWARCHIWACH.md).
 
@@ -129,7 +137,7 @@ Pure parser/resolution components are deterministic for the same input. Network 
 
 Normal CI uses fixture HTML and fake responses. Live third-party availability is not required.
 
-## Provenance
+## Provenance and serialization
 
 A catalog records:
 
@@ -159,6 +167,16 @@ catalog provenance
 
 Original remote filenames and request hints are preserved when the provider exposes them; normalization does not replace raw values. A provider-generated storage filename does not claim to be the remote filename when the remote service did not publish one.
 
+The completed P2 provider uses the existing versioned shapes without an incompatible change:
+
+```text
+mytree.scan-catalog.v1
+mytree.scan-resolution.v1
+mytree.downloaded-scan.v1
+```
+
+Unit/ordinal/object identity and rights/access data remain represented through the existing scan metadata, request/resolution objects, URLs and provider provenance.
+
 ## Non-goals
 
 - MyTree source identity reconciliation
@@ -166,6 +184,8 @@ Original remote filenames and request hints are preserved when the provider expo
 - fuzzy act matching
 - person identity resolution
 - automatic selection of a remote book from only parish/year/type
+- mechanical migration of legacy Szukaj w Archiwach URLs
+- optimized whole-unit/batch Szukaj w Archiwach download
 - Laravel/Eloquent/Filament integration in the core package
 
-Collection/book discovery by parish/year/type may be added later as a separate capability after provider semantics are verified.
+Collection/book discovery by parish/year/type may be added later as a separate capability after provider semantics are verified. Laravel/MyTree application registration remains an M7 concern.

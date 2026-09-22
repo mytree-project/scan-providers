@@ -11,6 +11,7 @@ use MyTree\ScanProviders\Domain\HttpResponse;
 use MyTree\ScanProviders\Domain\ResolveScanRequest;
 use MyTree\ScanProviders\Domain\ScanResolutionStatus;
 use MyTree\ScanProviders\Domain\ScanResourceReference;
+use MyTree\ScanProviders\Exception\ScanCapabilityUnavailableException;
 use MyTree\ScanProviders\Exception\UnexpectedProviderResponseException;
 use MyTree\ScanProviders\Provider\SzukajWArchiwach\SzukajWArchiwachProvider;
 use MyTree\ScanProviders\Registry\ScanProviderRegistry;
@@ -24,7 +25,8 @@ final class SzukajWArchiwachDownloadTest extends TestCase
     private const UNIT_URL = 'https://www.szukajwarchiwach.gov.pl/jednostka/-/jednostka/990003';
     private const RESOURCE_URL = self::UNIT_URL . '#scan2';
     private const VIEWER_URL = self::UNIT_URL . '/obiekty/700002';
-    private const PUBLIC_SCAN_URL = 'https://www.szukajwarchiwach.gov.pl/skan/-/skan/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+    private const PUBLIC_SCAN_VIEWER_URL = 'https://www.szukajwarchiwach.gov.pl/skan/-/skan/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+    private const PHOTO_ASSET_URL = 'https://photos.szukajwarchiwach.gov.pl/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef_max';
     private const EXPECTED_FILENAME = 'szukajwarchiwach-990003-object-700002.jpg';
     private const EXPECTED_SHA256 = '8b7153f04cb34a8bf9065c5769ab6bcc7de05bb423a596c343fa139d48b3c6e2';
 
@@ -49,7 +51,7 @@ final class SzukajWArchiwachDownloadTest extends TestCase
         self::assertSame('image/jpeg', $result->mimeType);
         self::assertSame(self::RESOURCE_URL, $result->resourceUrl);
         self::assertSame(self::VIEWER_URL, $result->viewerUrl);
-        self::assertSame(self::PUBLIC_SCAN_URL, $result->downloadUrl);
+        self::assertSame(self::PHOTO_ASSET_URL, $result->downloadUrl);
         self::assertSame('2026-09-17T12:00:00+00:00', $result->retrievedAt);
         self::assertSame(20, $result->asset->size);
         self::assertSame(self::EXPECTED_SHA256, $result->asset->sha256);
@@ -61,7 +63,7 @@ final class SzukajWArchiwachDownloadTest extends TestCase
         );
         self::assertSame('990003', $result->catalogProvenance->details['unit_id']);
         self::assertSame(
-            [self::UNIT_URL, self::VIEWER_URL, self::PUBLIC_SCAN_URL],
+            [self::UNIT_URL, self::VIEWER_URL, self::PUBLIC_SCAN_VIEWER_URL],
             $http->requests,
         );
     }
@@ -98,8 +100,8 @@ final class SzukajWArchiwachDownloadTest extends TestCase
             new HttpResponse(503, [], 'temporary viewer failure', self::VIEWER_URL),
             new HttpResponse(200, [], $this->fixture('object-viewer.html'), self::VIEWER_URL),
         ]);
-        $http->respondSequence(self::PUBLIC_SCAN_URL, [
-            new HttpResponse(429, [], 'slow down', self::PUBLIC_SCAN_URL),
+        $http->respondSequence(self::PUBLIC_SCAN_VIEWER_URL, [
+            new HttpResponse(429, [], 'slow down', self::PUBLIC_SCAN_VIEWER_URL),
             $this->imageResponse(),
         ]);
         $provider = $this->provider($http, maxAttempts: 2);
@@ -116,8 +118,8 @@ final class SzukajWArchiwachDownloadTest extends TestCase
             self::UNIT_URL,
             self::VIEWER_URL,
             self::VIEWER_URL,
-            self::PUBLIC_SCAN_URL,
-            self::PUBLIC_SCAN_URL,
+            self::PUBLIC_SCAN_VIEWER_URL,
+            self::PUBLIC_SCAN_VIEWER_URL,
         ], $http->requests);
     }
 
@@ -126,12 +128,13 @@ final class SzukajWArchiwachDownloadTest extends TestCase
         $http = new FakeHttpClient();
         $http->respond(self::UNIT_URL, new HttpResponse(200, [], $this->fixture('multi-scan.html'), self::UNIT_URL));
         $http->respond(self::VIEWER_URL, new HttpResponse(200, [], $this->fixture('object-viewer.html'), self::VIEWER_URL));
-        $http->respond(self::PUBLIC_SCAN_URL, new HttpResponse(200, ['content-type' => ['text/html']], '<html>error</html>', self::PUBLIC_SCAN_URL));
+        $http->respond(self::PUBLIC_SCAN_VIEWER_URL, new HttpResponse(200, ['content-type' => ['text/html']], '<html>error</html>', self::PUBLIC_SCAN_VIEWER_URL));
         $provider = $this->provider($http);
         $resolution = $provider->resolve(new ResolveScanRequest(new ScanResourceReference(self::RESOURCE_URL)));
         self::assertNotNull($resolution->resolved);
 
-        $this->expectException(UnexpectedProviderResponseException::class);
+        $this->expectException(ScanCapabilityUnavailableException::class);
+        $this->expectExceptionMessage('browser-aware transport');
         (new DownloadScan(
             new ScanProviderRegistry([$provider]),
             new InMemoryScanAssetStorage(),
@@ -142,7 +145,7 @@ final class SzukajWArchiwachDownloadTest extends TestCase
     {
         $http->respond(self::UNIT_URL, new HttpResponse(200, [], $this->fixture('multi-scan.html'), self::UNIT_URL));
         $http->respond(self::VIEWER_URL, new HttpResponse(200, [], $this->fixture('object-viewer.html'), self::VIEWER_URL));
-        $http->respond(self::PUBLIC_SCAN_URL, $this->imageResponse());
+        $http->respond(self::PUBLIC_SCAN_VIEWER_URL, $this->imageResponse());
     }
 
     private function imageResponse(): HttpResponse
@@ -151,7 +154,7 @@ final class SzukajWArchiwachDownloadTest extends TestCase
             200,
             ['content-type' => ['image/jpeg']],
             "\xFF\xD8\xFF\xE0MYTREE-SZWA-TEST",
-            self::PUBLIC_SCAN_URL,
+            self::PHOTO_ASSET_URL,
         );
     }
 

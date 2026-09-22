@@ -8,6 +8,8 @@ use MyTree\ScanProviders\Contracts\ClockInterface;
 use MyTree\ScanProviders\Contracts\ScanAssetStorageInterface;
 use MyTree\ScanProviders\Domain\DownloadedScan;
 use MyTree\ScanProviders\Domain\ResolvedScan;
+use MyTree\ScanProviders\Domain\HttpResponse;
+use MyTree\ScanProviders\Exception\ScanCapabilityUnavailableException;
 use MyTree\ScanProviders\Exception\UnexpectedProviderResponseException;
 use MyTree\ScanProviders\Infrastructure\SystemClock;
 use MyTree\ScanProviders\Support\MimeTypeDetector;
@@ -32,6 +34,11 @@ final readonly class SzukajWArchiwachAssetDownloader
             throw new \InvalidArgumentException('Resolved scan belongs to a different provider.');
         }
 
+        $directToken = $scan->scan->metadata['public_scan_viewer_token'] ?? null;
+        if (($scan->scan->metadata['public_scan_viewer_url'] ?? false) === true && is_string($directToken)) {
+            return $this->downloadPublicScanViewer($scan, $directToken, $storage);
+        }
+
         [$unitId, $objectId] = $this->assertResolvedObject($scan);
         $viewerUrl = $scan->scan->viewerUrl;
         $viewer = $this->fetcher->get($viewerUrl, [
@@ -39,22 +46,19 @@ final readonly class SzukajWArchiwachAssetDownloader
             'Referer' => $this->withoutFragment($scan->resource->url),
         ]);
 
-        $downloadUrl = $this->viewerParser->publicScanUrl($viewer->body, $viewerUrl);
-        if ($downloadUrl === null) {
+        $scanViewerUrl = $this->viewerParser->publicScanUrl($viewer->body, $viewerUrl);
+        if ($scanViewerUrl === null) {
             throw new UnexpectedProviderResponseException(
                 'Szukaj w Archiwach object viewer did not expose a recognizable public /skan/-/skan/ link.',
             );
         }
 
         $this->sleepMilliseconds($this->requestPacingMilliseconds);
-        $binary = $this->fetcher->get($downloadUrl, [
+        $binary = $this->fetcher->get($scanViewerUrl, [
             'Accept' => 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
             'Referer' => $viewerUrl,
         ]);
-        $mimeType = $this->mimeTypeDetector->detect($binary->body, $binary->firstHeader('content-type'));
-        if ($mimeType === null) {
-            throw new UnexpectedProviderResponseException('Downloaded Szukaj w Archiwach response is not a recognized image asset.');
-        }
+        $mimeType = $this->imageMimeTypeOrFail($binary, $scanViewerUrl);
 
         $stored = $storage->store(
             $this->suggestedFilename($unitId, $objectId, $mimeType),
@@ -67,11 +71,78 @@ final readonly class SzukajWArchiwachAssetDownloader
             mimeType: $mimeType,
             resourceUrl: $scan->resource->url,
             viewerUrl: $viewerUrl,
-            downloadUrl: $downloadUrl,
+            downloadUrl: $binary->url,
             retrievedAt: $this->clock->now()->format(DATE_ATOM),
             resolutionStrategy: $scan->strategy,
             catalogProvenance: $scan->catalogProvenance,
         );
+    }
+
+    private function downloadPublicScanViewer(
+        ResolvedScan $scan,
+        string $token,
+        ScanAssetStorageInterface $storage,
+    ): DownloadedScan {
+        if (preg_match('~^[A-Za-z0-9_-]+$~D', $token) !== 1) {
+            throw new \InvalidArgumentException('Resolved Szukaj w Archiwach public scan viewer token is invalid.');
+        }
+        if ($scan->scan->viewerUrl !== $scan->resource->url) {
+            throw new \InvalidArgumentException('Resolved Szukaj w Archiwach scan viewer URL does not match its resource URL.');
+        }
+
+        $binary = $this->fetcher->get($scan->resource->url, [
+            'Accept' => 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+        ]);
+        $mimeType = $this->imageMimeTypeOrFail($binary, $scan->resource->url);
+
+        $stored = $storage->store(
+            $this->suggestedDirectFilename($token, $mimeType),
+            $binary->body,
+        );
+
+        return new DownloadedScan(
+            providerKey: SzukajWArchiwachProvider::KEY,
+            asset: $stored,
+            mimeType: $mimeType,
+            resourceUrl: $scan->resource->url,
+            viewerUrl: $scan->scan->viewerUrl,
+            downloadUrl: $binary->url,
+            retrievedAt: $this->clock->now()->format(DATE_ATOM),
+            resolutionStrategy: $scan->strategy,
+            catalogProvenance: $scan->catalogProvenance,
+        );
+    }
+
+    private function imageMimeTypeOrFail(HttpResponse $response, string $viewerUrl): string
+    {
+        $mimeType = $this->mimeTypeDetector->detect($response->body, $response->firstHeader('content-type'));
+        if ($mimeType !== null) {
+            return $mimeType;
+        }
+
+        $contentType = strtolower((string) $response->firstHeader('content-type'));
+        $bodyPrefix = strtolower(substr($response->body, 0, 16384));
+        if (str_contains($contentType, 'text/html') || str_contains($bodyPrefix, '<html')) {
+            throw new ScanCapabilityUnavailableException(sprintf(
+                'Szukaj w Archiwach public scan locator %s is an HTML viewer. Raw image acquisition requires browser-aware transport; the standalone HTTP client cannot treat the viewer response as an image asset.',
+                $viewerUrl,
+            ));
+        }
+
+        throw new UnexpectedProviderResponseException('Downloaded Szukaj w Archiwach response is not a recognized image asset.');
+    }
+
+    private function suggestedDirectFilename(string $token, string $mimeType): string
+    {
+        $extension = match ($mimeType) {
+            'image/jpeg' => 'jpg',
+            'image/png' => 'png',
+            'image/webp' => 'webp',
+            'image/tiff' => 'tif',
+            default => 'bin',
+        };
+
+        return sprintf('szukajwarchiwach-scan-%s.%s', substr(hash('sha256', $token), 0, 24), $extension);
     }
 
     /** @return array{0:string,1:string} */

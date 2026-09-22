@@ -17,10 +17,9 @@ use MyTree\ScanProviders\Domain\ResolveScanRequest;
 use MyTree\ScanProviders\Domain\ScanLocatorHints;
 use MyTree\ScanProviders\Domain\ScanResolutionStatus;
 use MyTree\ScanProviders\Domain\ScanResourceReference;
+use MyTree\ScanProviders\Infrastructure\DefaultScanProviderRegistryFactory;
 use MyTree\ScanProviders\Infrastructure\LocalFilesystemScanAssetStorage;
 use MyTree\ScanProviders\Infrastructure\NativeHttpClient;
-use MyTree\ScanProviders\Provider\GenealodzySkanoteka\GenealodzySkanotekaProvider;
-use MyTree\ScanProviders\Registry\ScanProviderRegistry;
 
 function usage(int $exit = 0): never
 {
@@ -31,20 +30,24 @@ Commands:
   php bin/mytree-scan providers
 
   php bin/mytree-scan discover \
-    --url="https://metryki.genealodzy.pl/metryki.php?..." \
+    --url="<scan resource URL>" \
     [--format=table|json]
 
   php bin/mytree-scan resolve \
-    --url="https://metryki.genealodzy.pl/metryki.php?..." \
-    --record-number=17 \
+    --url="<scan resource URL>" \
+    [--record-number=17 | --scan-number=42] \
     [--year=1853] [--record-type=birth] [--parish=Imbramowice]
 
   php bin/mytree-scan download \
-    --url="https://metryki.genealodzy.pl/metryki.php?..." \
-    --record-number=17 \
+    --url="<scan resource URL>" \
+    [--record-number=17 | --scan-number=42] \
     --output=var/scans
 
+Szukaj w Archiwach accepts current unit URLs with #scan<N> in --url or an explicit --scan-number=<N> hint.
+
 Common:
+  --archive-signature=<raw signature>
+  --page=<raw page locator>
   --timeout=60
   --help
 TXT;
@@ -97,9 +100,7 @@ if (isset($opts['help'])) {
 
 $timeout = max(5, (int) ($opts['timeout'] ?? 60));
 $http = new NativeHttpClient(timeoutSeconds: $timeout);
-$registry = new ScanProviderRegistry([
-    new GenealodzySkanotekaProvider($http),
-]);
+$registry = DefaultScanProviderRegistryFactory::create($http);
 
 try {
     if ($command === 'providers') {
@@ -121,13 +122,20 @@ try {
         if ($format !== 'table') {
             throw new InvalidArgumentException('Unsupported --format. Use table or json.');
         }
-        fwrite(STDOUT, "FILENAME\tLOCATOR\tVIEWER URL\n");
+        fwrite(STDOUT, "REMOTE ID\tLABEL\tREMOTE FILENAME\tLOCATOR\tVIEWER URL\n");
         foreach ($catalog->scans as $scan) {
             $locator = $scan->locators[0] ?? null;
-            $locatorText = $locator === null
-                ? ''
-                : ($locator->from === null ? $locator->kind : $locator->from . ($locator->to !== $locator->from ? '-' . $locator->to : ''));
-            fwrite(STDOUT, $scan->remoteFilename . "\t" . $locatorText . "\t" . $scan->viewerUrl . PHP_EOL);
+            $locatorText = '';
+            if ($locator !== null) {
+                $locatorText = $locator->from === null
+                    ? $locator->raw
+                    : $locator->from . ($locator->to !== $locator->from ? '-' . $locator->to : '');
+            }
+            $remoteFilename = $scan->remoteFilename !== '' ? $scan->remoteFilename : '-';
+            fwrite(
+                STDOUT,
+                $scan->remoteId . "\t" . $scan->label . "\t" . $remoteFilename . "\t" . $locatorText . "\t" . $scan->viewerUrl . PHP_EOL,
+            );
         }
         exit(0);
     }

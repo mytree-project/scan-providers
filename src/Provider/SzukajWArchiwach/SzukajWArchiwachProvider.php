@@ -27,6 +27,7 @@ final class SzukajWArchiwachProvider implements ScanProviderInterface, ScanCatal
 {
     public const KEY = 'szukajwarchiwach';
     public const VERSION = '0.1.0';
+    public const PUBLIC_SCAN_VIEWER_STRATEGY = 'public_scan_viewer_url';
 
     /** @var array<string,ScanCatalog> */
     private array $catalogCache = [];
@@ -71,11 +72,21 @@ final class SzukajWArchiwachProvider implements ScanProviderInterface, ScanCatal
 
     public function supports(ScanResourceReference $resource): bool
     {
-        return $this->unitId($resource) !== null;
+        return $this->unitId($resource) !== null || $this->publicScanToken($resource) !== null;
     }
 
     public function discoverScans(ScanResourceReference $resource): ScanCatalog
     {
+        $directToken = $this->publicScanToken($resource);
+        if ($directToken !== null) {
+            return new ScanCatalog(
+                providerKey: self::KEY,
+                resource: $resource,
+                scans: [$this->directAvailableScan($resource, $directToken)],
+                provenance: $this->directProvenance($resource, $directToken),
+            );
+        }
+
         $unitId = $this->unitId($resource);
         if ($unitId === null) {
             throw new \InvalidArgumentException('Resource is not a supported Szukaj w Archiwach unit URL.');
@@ -87,8 +98,11 @@ final class SzukajWArchiwachProvider implements ScanProviderInterface, ScanCatal
         }
 
         $unitUrl = $this->canonicalUnitUrl($unitId);
+        $catalogStartUrl = $this->catalogStartUrl($unitId);
         $nextPageUrl = $unitUrl;
         $visited = [];
+        $bootstrapResponseSha256 = null;
+        $bootstrapFallbackUsed = false;
         $rawEntries = [];
         $seenObjectIds = [];
         $pageHashes = [];
@@ -96,28 +110,48 @@ final class SzukajWArchiwachProvider implements ScanProviderInterface, ScanCatal
         $firstPage = null;
         $expectedCount = null;
         $pageNumber = 0;
+        $lastResponseUrl = null;
+        $lastResponseBody = '';
 
         while ($nextPageUrl !== null) {
-            ++$pageNumber;
-            if ($pageNumber > $this->maxPages) {
-                throw new UnexpectedProviderResponseException('Szukaj w Archiwach catalog exceeded the configured pagination limit.');
-            }
             if (isset($visited[$nextPageUrl])) {
                 throw new UnexpectedProviderResponseException('Szukaj w Archiwach catalog pagination entered a URL loop.');
             }
             $visited[$nextPageUrl] = true;
             $this->assertUnitPageUrl($nextPageUrl, $unitId);
 
-            if ($pageNumber > 1) {
+            if (count($visited) > 1) {
                 $this->sleepMilliseconds($this->requestPacingMilliseconds);
             }
 
             $response = $this->fetchPage($nextPageUrl);
+            $lastResponseUrl = $nextPageUrl;
+            $lastResponseBody = $response->body;
             $parsed = $this->parser->parse($response->body, $nextPageUrl);
+
+            if (
+                $nextPageUrl === $unitUrl
+                && $parsed->scanCount === null
+                && $parsed->scanEntries === []
+                && $parsed->nextPageUrl === null
+            ) {
+                $bootstrapResponseSha256 = hash('sha256', $response->body);
+                $bootstrapFallbackUsed = true;
+                $nextPageUrl = $catalogStartUrl;
+                continue;
+            }
+
+            ++$pageNumber;
+            if ($pageNumber > $this->maxPages) {
+                throw new UnexpectedProviderResponseException('Szukaj w Archiwach catalog exceeded the configured pagination limit.');
+            }
+
             $firstPage ??= $parsed;
-            $expectedCount ??= $parsed->scanCount;
-            if ($parsed->scanCount !== $expectedCount) {
-                throw new UnexpectedProviderResponseException('Szukaj w Archiwach scan cardinality changed between catalog pages.');
+            if ($parsed->scanCount !== null) {
+                $expectedCount ??= $parsed->scanCount;
+                if ($parsed->scanCount !== $expectedCount) {
+                    throw new UnexpectedProviderResponseException('Szukaj w Archiwach scan cardinality changed between catalog pages.');
+                }
             }
 
             $pageHash = hash('sha256', $response->body);
@@ -137,13 +171,16 @@ final class SzukajWArchiwachProvider implements ScanProviderInterface, ScanCatal
             $nextPageUrl = $parsed->nextPageUrl;
         }
 
-        if ($firstPage === null || $expectedCount === null) {
+        if ($firstPage === null) {
             throw new UnexpectedProviderResponseException('Szukaj w Archiwach catalog did not return a parseable first page.');
         }
-        if ($firstPage->title === null) {
-            throw new UnexpectedProviderResponseException('Szukaj w Archiwach unit page did not expose a recognizable unit title.');
+        if ($expectedCount === null && $rawEntries === []) {
+            throw new UnexpectedProviderResponseException(sprintf(
+                'Szukaj w Archiwach catalog exposed neither a declared scan count nor recognizable scan entries. %s',
+                $this->catalogDiagnostics($lastResponseUrl, $lastResponseBody),
+            ));
         }
-        if (count($rawEntries) !== $expectedCount) {
+        if ($expectedCount !== null && count($rawEntries) !== $expectedCount) {
             throw new UnexpectedProviderResponseException(sprintf(
                 'Szukaj w Archiwach catalog declared %d scan(s) but complete enumeration found %d.',
                 $expectedCount,
@@ -189,7 +226,12 @@ final class SzukajWArchiwachProvider implements ScanProviderInterface, ScanCatal
                     'discovery_strategy' => 'public_unit_html_scan_catalog',
                     'unit_id' => $unitId,
                     'canonical_unit_url' => $unitUrl,
-                    'scan_count' => $expectedCount,
+                    'catalog_start_url' => $catalogStartUrl,
+                    'bootstrap_fallback_used' => $bootstrapFallbackUsed,
+                    'bootstrap_response_sha256' => $bootstrapResponseSha256,
+                    'scan_count' => count($rawEntries),
+                    'declared_scan_count' => $expectedCount,
+                    'scan_count_source' => $expectedCount === null ? 'enumerated_catalog' : 'declared_and_verified',
                     'page_count' => $pageNumber,
                     'page_response_sha256' => $pageHashes,
                     'unit_metadata' => $unitMetadata,
@@ -203,13 +245,36 @@ final class SzukajWArchiwachProvider implements ScanProviderInterface, ScanCatal
 
     public function resolve(ResolveScanRequest $request): ScanResolution
     {
+        $directToken = $this->publicScanToken($request->resource);
+        if ($directToken !== null) {
+            $scan = $this->directAvailableScan($request->resource, $directToken);
+            $provenance = $this->directProvenance($request->resource, $directToken);
+
+            return new ScanResolution(
+                status: ScanResolutionStatus::Resolved,
+                providerKey: self::KEY,
+                request: $request,
+                candidates: [$scan],
+                resolved: new ResolvedScan(
+                    providerKey: self::KEY,
+                    resource: $request->resource,
+                    scan: $scan,
+                    strategy: self::PUBLIC_SCAN_VIEWER_STRATEGY,
+                    matchedHintRaw: $request->resource->url,
+                    catalogProvenance: $provenance,
+                ),
+                strategy: self::PUBLIC_SCAN_VIEWER_STRATEGY,
+                trace: ['Official public scan viewer URL is already an exact scan locator; raw image acquisition may require browser-aware transport.'],
+            );
+        }
+
         if (!$this->supports($request->resource)) {
             return new ScanResolution(
                 status: ScanResolutionStatus::Unsupported,
                 providerKey: self::KEY,
                 request: $request,
                 reason: 'resource_not_supported',
-                trace: ['Resource is not a supported Szukaj w Archiwach unit URL.'],
+                trace: ['Resource is not a supported Szukaj w Archiwach unit or public scan URL.'],
             );
         }
 
@@ -229,6 +294,62 @@ final class SzukajWArchiwachProvider implements ScanProviderInterface, ScanCatal
         return $this->assetDownloader->download($scan, $storage);
     }
 
+    private function directAvailableScan(ScanResourceReference $resource, string $token): AvailableScan
+    {
+        return new AvailableScan(
+            providerKey: self::KEY,
+            remoteId: $token,
+            label: 'Szukaj w Archiwach scan viewer',
+            remoteFilename: '',
+            viewerUrl: $resource->url,
+            locators: [new ScanLocator(ScanLocator::OPAQUE, 'public-scan-viewer:' . $token)],
+            metadata: [
+                'public_scan_viewer_token' => $token,
+                'public_scan_viewer_url' => true,
+                'remote_filename_available' => false,
+            ],
+        );
+    }
+
+    private function directProvenance(ScanResourceReference $resource, string $token): ScanProvenance
+    {
+        return new ScanProvenance(
+            providerKey: self::KEY,
+            providerVersion: self::VERSION,
+            resourceUrl: $resource->url,
+            retrievedAt: $this->clock->now()->format(DATE_ATOM),
+            responseSha256: hash('sha256', "public-scan-viewer-locator\n" . $resource->url),
+            details: [
+                'discovery_strategy' => self::PUBLIC_SCAN_VIEWER_STRATEGY,
+                'public_scan_viewer_token' => $token,
+                'response_sha256_basis' => 'public_scan_viewer_locator_without_network_fetch',
+            ],
+        );
+    }
+
+    private function publicScanToken(ScanResourceReference $resource): ?string
+    {
+        $parts = parse_url($resource->url);
+        if (!is_array($parts)) {
+            return null;
+        }
+
+        $scheme = strtolower((string) ($parts['scheme'] ?? ''));
+        $host = strtolower((string) ($parts['host'] ?? ''));
+        $path = (string) ($parts['path'] ?? '');
+        if ($scheme !== 'https' || !in_array($host, ['www.szukajwarchiwach.gov.pl', 'szukajwarchiwach.gov.pl'], true)) {
+            return null;
+        }
+        if (isset($parts['query']) || isset($parts['fragment'])) {
+            return null;
+        }
+        if (!preg_match('~^/skan/-/skan/([A-Za-z0-9_-]+)/?$~D', $path, $match)) {
+            return null;
+        }
+
+        return $match[1];
+    }
+
     private function fetchPage(string $url): HttpResponse
     {
         return $this->fetcher->get($url, [
@@ -238,12 +359,12 @@ final class SzukajWArchiwachProvider implements ScanProviderInterface, ScanCatal
 
     private function unitId(ScanResourceReference $resource): ?string
     {
-        if ($resource->host() !== 'www.szukajwarchiwach.gov.pl') {
+        if (!in_array($resource->host(), ['www.szukajwarchiwach.gov.pl', 'szukajwarchiwach.gov.pl'], true)) {
             return null;
         }
 
         $path = (string) parse_url($resource->url, PHP_URL_PATH);
-        if (!preg_match('~^/jednostka/-/jednostka/([1-9]\\d*)/?$~', $path, $match)) {
+        if (!preg_match('~^/(?:en/|de/)?jednostka/-/jednostka/([1-9]\\d*)/?$~', $path, $match)) {
             return null;
         }
 
@@ -253,6 +374,15 @@ final class SzukajWArchiwachProvider implements ScanProviderInterface, ScanCatal
     private function canonicalUnitUrl(string $unitId): string
     {
         return 'https://www.szukajwarchiwach.gov.pl/jednostka/-/jednostka/' . $unitId;
+    }
+
+    private function catalogStartUrl(string $unitId): string
+    {
+        return $this->canonicalUnitUrl($unitId)
+            . '?_Jednostka_delta=200'
+            . '&_Jednostka_resetCur=false'
+            . '&_Jednostka_cur=1'
+            . '&_Jednostka_id_jednostki=' . rawurlencode($unitId);
     }
 
     private function objectViewerUrl(string $unitId, string $objectId): string
@@ -279,12 +409,14 @@ final class SzukajWArchiwachProvider implements ScanProviderInterface, ScanCatal
      * @param array<string,string> $rawMetadata
      * @return array<string,mixed>
      */
-    private function unitMetadata(string $title, array $rawMetadata): array
+    private function unitMetadata(?string $title, array $rawMetadata): array
     {
         $metadata = [
-            'title' => $title,
             'raw_fields' => $rawMetadata,
         ];
+        if ($title !== null) {
+            $metadata['title'] = $title;
+        }
         $mapping = [
             'Sygnatura' => 'signature',
             'Reference code' => 'signature',
@@ -313,6 +445,22 @@ final class SzukajWArchiwachProvider implements ScanProviderInterface, ScanCatal
         }
 
         return $metadata;
+    }
+
+    private function catalogDiagnostics(?string $url, string $body): string
+    {
+        $markers = [];
+        foreach (['data-plikid', 'skan_-id-pliku', 'load-photo-slider', 'jednostka-skan', 'Wpisy', '_Jednostka_'] as $marker) {
+            $markers[] = $marker . '=' . (str_contains($body, $marker) ? 'yes' : 'no');
+        }
+
+        return sprintf(
+            '[url=%s bytes=%d sha256=%s markers:%s]',
+            $url ?? 'unknown',
+            strlen($body),
+            hash('sha256', $body),
+            implode(',', $markers),
+        );
     }
 
     private function sleepMilliseconds(int $milliseconds): void

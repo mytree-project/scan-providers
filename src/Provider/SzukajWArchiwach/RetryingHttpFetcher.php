@@ -42,6 +42,14 @@ final readonly class RetryingHttpFetcher
             }
 
             if ($response->status >= 200 && $response->status < 300) {
+                if ($this->isImpervaSoftBlock($response)) {
+                    throw new UnexpectedProviderResponseException(sprintf(
+                        'Szukaj w Archiwach blocked the HTTP client with Imperva/Incapsula anti-bot protection for %s. '
+                        . 'The standalone HTTP client cannot continue this live request without a browser-established session.',
+                        $url,
+                    ));
+                }
+
                 return $response;
             }
 
@@ -58,6 +66,30 @@ final readonly class RetryingHttpFetcher
         throw $lastTransportFailure ?? new UnexpectedProviderResponseException(
             'Szukaj w Archiwach request failed without a response.',
         );
+    }
+
+    private function isImpervaSoftBlock(HttpResponse $response): bool
+    {
+        $body = strtolower($response->body);
+        if (
+            str_contains($body, 'incapsula incident id')
+            || str_contains($body, 'request unsuccessful. incapsula')
+            || str_contains($body, '/_incapsula_resource')
+        ) {
+            return true;
+        }
+
+        if ($response->firstHeader('x-iinfo') === null || strlen($response->body) > 1024) {
+            return false;
+        }
+
+        foreach ($response->headers['set-cookie'] ?? [] as $cookie) {
+            if (preg_match('~(?:^|\s)(?:visid_incap_|incap_ses_)~i', $cookie) === 1) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private function sleepMilliseconds(int $milliseconds): void

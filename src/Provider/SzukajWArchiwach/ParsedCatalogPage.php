@@ -11,7 +11,7 @@ final readonly class ParsedCatalogPage
      * @param list<array{object_id:string,label:string}> $scanEntries
      */
     public function __construct(
-        public int $scanCount,
+        public ?int $scanCount,
         public ?string $title,
         public array $rawMetadata,
         public array $scanEntries,
