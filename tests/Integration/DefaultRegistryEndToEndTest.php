@@ -8,13 +8,13 @@ use DateTimeImmutable;
 use MyTree\ScanProviders\Application\DiscoverScans;
 use MyTree\ScanProviders\Application\DownloadScan;
 use MyTree\ScanProviders\Application\ResolveScan;
-use MyTree\ScanProviders\Domain\DownloadedScan;
 use MyTree\ScanProviders\Domain\HttpResponse;
 use MyTree\ScanProviders\Domain\ResolveScanRequest;
 use MyTree\ScanProviders\Domain\ScanCatalog;
 use MyTree\ScanProviders\Domain\ScanResolution;
 use MyTree\ScanProviders\Domain\ScanResolutionStatus;
 use MyTree\ScanProviders\Domain\ScanResourceReference;
+use MyTree\ScanProviders\Exception\ScanCapabilityUnavailableException;
 use MyTree\ScanProviders\Exception\UnsupportedScanProviderException;
 use MyTree\ScanProviders\Infrastructure\DefaultScanProviderRegistryFactory;
 use MyTree\ScanProviders\Provider\GenealodzySkanoteka\GenealodzySkanotekaProvider;
@@ -30,7 +30,7 @@ final class DefaultRegistryEndToEndTest extends TestCase
     private const UNIT_URL = 'https://www.szukajwarchiwach.gov.pl/jednostka/-/jednostka/990003';
     private const RESOURCE_URL = self::UNIT_URL . '#scan2';
     private const VIEWER_URL = self::UNIT_URL . '/obiekty/700002';
-    private const PUBLIC_SCAN_URL = 'https://www.szukajwarchiwach.gov.pl/skan/-/skan/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+    private const PUBLIC_SCAN_VIEWER_URL = 'https://www.szukajwarchiwach.gov.pl/skan/-/skan/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
     private const SKANOTEKA_URL = 'https://metryki.genealodzy.pl/metryki.php?op=kt&ar=10&zs=2596d&sy=501&kt=12';
 
     public function testDefaultStandaloneRegistryContainsBothProvidersAndRoutesCurrentResources(): void
@@ -61,7 +61,7 @@ final class DefaultRegistryEndToEndTest extends TestCase
         ));
     }
 
-    public function testRegistryDiscoverResolveDownloadAndSerializationPreserveSzukajWArchiwachProvenance(): void
+    public function testRegistryDiscoverResolveAndDownloadFailurePreserveSzukajWArchiwachBoundary(): void
     {
         $http = new FakeHttpClient();
         $http->respond(self::UNIT_URL, new HttpResponse(
@@ -76,12 +76,11 @@ final class DefaultRegistryEndToEndTest extends TestCase
             $this->fixture('object-viewer.html'),
             self::VIEWER_URL,
         ));
-        $jpeg = "\xFF\xD8\xFF\xE0MYTREE-SZWA-E2E";
-        $http->respond(self::PUBLIC_SCAN_URL, new HttpResponse(
+        $http->respond(self::PUBLIC_SCAN_VIEWER_URL, new HttpResponse(
             200,
-            ['content-type' => ['image/jpeg']],
-            $jpeg,
-            self::PUBLIC_SCAN_URL,
+            ['content-type' => ['text/html;charset=UTF-8']],
+            '<!doctype html><html><head><title>Skan - Szukaj w Archiwach</title></head><body>viewer</body></html>',
+            self::PUBLIC_SCAN_VIEWER_URL,
         ));
 
         $clock = new FixedClock(new DateTimeImmutable('2026-09-18T03:00:00+00:00'));
@@ -125,28 +124,16 @@ final class DefaultRegistryEndToEndTest extends TestCase
         self::assertSame('700002', $resolutionJson['resolved']['scan']['metadata']['object_id']);
 
         $storage = new InMemoryScanAssetStorage();
-        $downloaded = (new DownloadScan($registry, $storage))->execute($resolution->resolved);
-        $serialized = $this->serialized($downloaded);
+        try {
+            (new DownloadScan($registry, $storage))->execute($resolution->resolved);
+            self::fail('Expected browser-aware transport requirement for the public scan viewer.');
+        } catch (ScanCapabilityUnavailableException $exception) {
+            self::assertStringContainsString('HTML viewer', $exception->getMessage());
+            self::assertStringContainsString('browser-aware transport', $exception->getMessage());
+        }
 
-        self::assertSame(DownloadedScan::SCHEMA, $serialized['schema']);
-        self::assertSame(SzukajWArchiwachProvider::KEY, $downloaded->providerKey);
-        self::assertSame(self::RESOURCE_URL, $downloaded->resourceUrl);
-        self::assertSame(self::VIEWER_URL, $downloaded->viewerUrl);
-        self::assertSame(self::PUBLIC_SCAN_URL, $downloaded->downloadUrl);
-        self::assertSame('image/jpeg', $downloaded->mimeType);
-        self::assertSame(strlen($jpeg), $downloaded->asset->size);
-        self::assertSame(hash('sha256', $jpeg), $downloaded->asset->sha256);
-        self::assertSame('2026-09-18T03:00:00+00:00', $downloaded->retrievedAt);
-        self::assertSame('990003', $downloaded->catalogProvenance->details['unit_id']);
-        self::assertSame('990003', $serialized['catalog_provenance']['details']['unit_id']);
-        self::assertSame(self::VIEWER_URL, $serialized['viewer_url']);
-        self::assertSame(self::PUBLIC_SCAN_URL, $serialized['download_url']);
         self::assertSame(
-            'Status prawny zgodnie z opisem materiału',
-            $downloaded->catalogProvenance->details['unit_metadata']['access_rights'],
-        );
-        self::assertSame(
-            [self::UNIT_URL, self::VIEWER_URL, self::PUBLIC_SCAN_URL],
+            [self::UNIT_URL, self::VIEWER_URL, self::PUBLIC_SCAN_VIEWER_URL],
             $http->requests,
         );
     }
