@@ -37,6 +37,7 @@ final class SzukajWArchiwachProvider implements ScanProviderInterface, ScanCatal
 
     public function __construct(
         private readonly HttpClientInterface $http,
+        private readonly ?BrowserSessionClientInterface $browserSessionClient = null,
         private readonly CatalogPageParser $parser = new CatalogPageParser(),
         private readonly OrdinalScanResolver $ordinalResolver = new OrdinalScanResolver(),
         private readonly ClockInterface $clock = new SystemClock(),
@@ -55,11 +56,13 @@ final class SzukajWArchiwachProvider implements ScanProviderInterface, ScanCatal
 
         $this->fetcher = new RetryingHttpFetcher(
             http: $this->http,
+            browserSessionClient: $this->browserSessionClient,
             maxAttempts: $this->maxAttempts,
             retryBackoffMilliseconds: $this->retryBackoffMilliseconds,
         );
         $this->assetDownloader = $assetDownloader ?? new SzukajWArchiwachAssetDownloader(
             fetcher: $this->fetcher,
+            browserSessionClient: $this->browserSessionClient,
             clock: $this->clock,
             requestPacingMilliseconds: $this->requestPacingMilliseconds,
         );
@@ -301,7 +304,7 @@ final class SzukajWArchiwachProvider implements ScanProviderInterface, ScanCatal
             remoteId: $token,
             label: 'Szukaj w Archiwach scan viewer',
             remoteFilename: '',
-            viewerUrl: $resource->url,
+            viewerUrl: $this->publicScanViewerUrl($token),
             locators: [new ScanLocator(ScanLocator::OPAQUE, 'public-scan-viewer:' . $token)],
             metadata: [
                 'public_scan_viewer_token' => $token,
@@ -325,6 +328,11 @@ final class SzukajWArchiwachProvider implements ScanProviderInterface, ScanCatal
                 'response_sha256_basis' => 'public_scan_viewer_locator_without_network_fetch',
             ],
         );
+    }
+
+    private function publicScanViewerUrl(string $token): string
+    {
+        return 'https://www.szukajwarchiwach.gov.pl/skan/-/skan/' . rawurlencode($token);
     }
 
     private function publicScanToken(ScanResourceReference $resource): ?string
