@@ -109,7 +109,9 @@ final class SzukajWArchiwachProvider implements ScanProviderInterface, ScanCatal
         $rawEntries = [];
         $seenObjectIds = [];
         $pageHashes = [];
+        $pageEntryCounts = [];
         $responseCorpus = '';
+        $observedPageSize = null;
         $firstPage = null;
         $expectedCount = null;
         $pageNumber = 0;
@@ -172,7 +174,11 @@ final class SzukajWArchiwachProvider implements ScanProviderInterface, ScanCatal
             }
 
             $nextPageUrl = $parsed->nextPageUrl
-                ?? $this->syntheticNextCatalogPageUrl($nextPageUrl, count($parsed->scanEntries));
+                ?? $this->syntheticNextCatalogPageUrl(
+                    $nextPageUrl,
+                    count($parsed->scanEntries),
+                    $observedPageSize,
+                );
         }
 
         if ($firstPage === null) {
@@ -238,6 +244,8 @@ final class SzukajWArchiwachProvider implements ScanProviderInterface, ScanCatal
                     'scan_count_source' => $expectedCount === null ? 'enumerated_catalog' : 'declared_and_verified',
                     'page_count' => $pageNumber,
                     'page_response_sha256' => $pageHashes,
+                    'page_entry_count' => $pageEntryCounts,
+                    'observed_page_size' => $observedPageSize,
                     'unit_metadata' => $unitMetadata,
                 ],
             ),
@@ -456,19 +464,22 @@ final class SzukajWArchiwachProvider implements ScanProviderInterface, ScanCatal
         return $metadata;
     }
 
-    private function syntheticNextCatalogPageUrl(string $pageUrl, int $entryCount): ?string
-    {
+    private function syntheticNextCatalogPageUrl(
+        string $pageUrl,
+        int $entryCount,
+        ?int $observedPageSize,
+    ): ?string {
         $query = \MyTree\ScanProviders\Support\Url::query($pageUrl);
         $currentPage = $this->positiveQueryInt($query['_Jednostka_cur'] ?? null);
-        $pageSize = $this->positiveQueryInt($query['_Jednostka_delta'] ?? null);
         $unitId = $query['_Jednostka_id_jednostki'] ?? null;
 
         if (
             $currentPage === null
-            || $pageSize === null
+            || $observedPageSize === null
+            || $observedPageSize < 1
             || !is_scalar($unitId)
             || (string) $unitId === ''
-            || $entryCount < $pageSize
+            || $entryCount < $observedPageSize
         ) {
             return null;
         }
