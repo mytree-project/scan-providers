@@ -121,6 +121,17 @@ try {
                     }
 
                     await Promise.allSettled(pending);
+
+                    const discoveredAfterActivation = await discoverPublicScanViewerFromContext(context);
+                    if (discoveredAfterActivation !== null) {
+                        await page.goto(discoveredAfterActivation, {
+                            waitUntil: 'domcontentloaded',
+                            timeout: timeoutMs,
+                        });
+                        await page.waitForLoadState('networkidle', { timeout: Math.min(timeoutMs, 15000) }).catch(() => null);
+                        await page.waitForTimeout(2500);
+                        await Promise.allSettled(pending);
+                    }
                 }
             }
         }
@@ -134,6 +145,14 @@ try {
 
         candidates.sort(compareImageCandidates);
         const selected = candidates[0];
+
+        if (isObjectViewer(targetUrl) && isKnownPreviewAsset(selected.url)) {
+            const observed = [...new Set(candidates.map((candidate) => candidate.url))].join(', ');
+            fail(
+                'Object viewer exposed only preview-quality image responses; '
+                + `original/raw scan asset was not observed. Candidates: ${observed}`,
+            );
+        }
 
         emit({
             status: selected.status,
@@ -157,8 +176,15 @@ async function discoverPublicScanViewerUrl(page) {
             }
         }
 
-        const html = document.documentElement?.innerHTML ?? '';
-        for (const match of html.matchAll(pattern)) {
+        for (const entry of performance.getEntriesByType('resource')) {
+            if (entry.name.includes('/skan/-/skan/')) {
+                values.add(entry.name);
+            }
+        }
+
+        const rawHtml = document.documentElement?.innerHTML ?? '';
+        const normalizedHtml = rawHtml.replaceAll('\\\\/', '/');
+        for (const match of normalizedHtml.matchAll(pattern)) {
             values.add(match[0]);
         }
 
@@ -194,6 +220,17 @@ function compareImageCandidates(left, right) {
     return right.body.length - left.body.length;
 }
 
+function isKnownPreviewAsset(url) {
+    try {
+        const pathname = new URL(url).pathname.toLowerCase();
+        return pathname.endsWith('_mid')
+            || pathname.endsWith('_min')
+            || pathname.endsWith('_thumb');
+    } catch {
+        return false;
+    }
+}
+
 function imageQualityRank(url) {
     try {
         const pathname = new URL(url).pathname.toLowerCase();
@@ -211,6 +248,17 @@ function imageQualityRank(url) {
     }
 
     return 0;
+}
+
+async function discoverPublicScanViewerFromContext(context) {
+    for (const observedPage of context.pages()) {
+        const candidate = await discoverPublicScanViewerUrl(observedPage);
+        if (candidate !== null) {
+            return candidate;
+        }
+    }
+
+    return null;
 }
 
 function isObjectViewer(url) {
