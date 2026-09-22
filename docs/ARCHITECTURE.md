@@ -115,15 +115,17 @@ Ordinal resolution treats `#scan<N>` as a browser-side locator hint rather than 
 
 Conflicting raw hints, missing/out-of-range ordinals and non-unique catalog matches remain explicit `unresolved` / `ambiguous` / `unsupported` outcomes. The original `ResolveScanRequest`, catalog candidates and catalog provenance remain attached to the result so disagreement between supplied locator data and current discovery is diagnosable.
 
-For download, the provider opens the exact object viewer and extracts one supported public scan link:
+For download, the provider opens the exact object viewer and extracts one supported public scan-viewer link:
 
 ```text
 /skan/-/skan/<opaque-token>
 ```
 
-The token is treated as opaque provider data. The adapter deliberately ignores undocumented `/o/pliki-api/...` routes as public contracts. Missing or non-unique public scan links fail explicitly. The selected public scan URL is fetched through the shared HTTP boundary, validated as an image, stored through `ScanAssetStorageInterface`, and returned with the existing `mytree.downloaded-scan.v1` semantics. A small provider-specific retry collaborator supplies the same bounded transport/`429`/`5xx` policy to catalog, viewer and asset retrieval.
+The token is treated as opaque provider data. Live testing on 2026-09-22 established that this route is an HTML viewer locator rather than the raw image asset. The adapter deliberately ignores undocumented `/o/pliki-api/...` routes as public contracts. Missing or non-unique public viewer links fail explicitly.
 
-The standalone CLI exposes the provider only through the existing `DiscoverScans`, `ResolveScan` and `DownloadScan` application services. No parallel provider-specific orchestration API exists. Legacy `szukajwarchiwach.pl` URLs are not claimed or mechanically rewritten by provider routing.
+The standalone `NativeHttpClient` may receive viewer HTML at the raw-asset step. That outcome is reported explicitly as `ScanCapabilityUnavailableException` requiring browser-aware transport rather than being accepted as an image. A successful browser PoC observed the real JPEG as a separate subresource from `photos.szukajwarchiwach.gov.pl`; the observed URL shape is compatibility evidence, not a stable derivation contract. Production browser-session transport is deferred to M7/MyTree infrastructure behind a replaceable boundary. A small provider-specific retry collaborator continues to supply the same bounded transport/`429`/`5xx` policy to the standalone catalog/viewer requests.
+
+The standalone CLI exposes the provider only through the existing `DiscoverScans`, `ResolveScan` and `DownloadScan` application services. No parallel provider-specific orchestration API exists. `ResolveScan` can resolve an exact public `/skan/...` viewer locator with strategy `public_scan_viewer_url`; current standalone live `DownloadScan` may report browser-aware transport as unavailable. Legacy `szukajwarchiwach.pl` URLs are not claimed or mechanically rewritten by provider routing.
 
 See [SZUKAJWARCHIWACH.md](SZUKAJWARCHIWACH.md).
 
