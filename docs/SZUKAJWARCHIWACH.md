@@ -216,7 +216,7 @@ This is an undocumented public-web integration. Live testing on 2026-09-18 found
 
 The provider recognizes explicit challenge-page/body/cookie signatures and fails with a dedicated anti-bot/session message. The presence of `x-iinfo` alone is **not** enough to classify a response as blocked: the successful 2026-09-22 browser PoC observed `x-iinfo` on valid viewer and JPEG responses too.
 
-The same 2026-09-22 PoC confirmed that headless Chromium can load the public `/skan/...` viewer and fetch the real JPEG subresource from `photos.szukajwarchiwach.gov.pl`. The standalone package does **not** try to disguise the client, solve challenges, import browser cookies, or embed Playwright. Production browser-session composition is deferred to M7/MyTree infrastructure behind a replaceable boundary.
+The same 2026-09-22 PoC confirmed that headless Chromium can load the public `/skan/...` viewer and fetch the real JPEG subresource from `photos.szukajwarchiwach.gov.pl`. The standalone package does **not** try to disguise the client, solve challenges or import browser cookies. It now embeds a pinned Playwright/Chromium runtime behind a replaceable infrastructure boundary; M7/MyTree later consumes this capability rather than implementing it separately.
 
 Network behavior is otherwise deliberately bounded:
 
