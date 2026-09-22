@@ -48,9 +48,15 @@ final readonly class SzukajWArchiwachAssetDownloader
         ]);
 
         $scanViewerUrl = $this->viewerParser->publicScanUrl($viewer->body, $objectViewerUrl);
+        if ($scanViewerUrl === null && $this->browserSessionClient !== null) {
+            $browserViewer = $this->browserSessionClient->fetchPage($objectViewerUrl);
+            $scanViewerUrl = $this->viewerParser->publicScanUrl($browserViewer->body, $browserViewer->url);
+        }
+
         if ($scanViewerUrl === null) {
             throw new UnexpectedProviderResponseException(
-                'Szukaj w Archiwach object viewer did not expose a recognizable public /skan/-/skan/ link.',
+                'Szukaj w Archiwach object viewer did not expose a recognizable public /skan/-/skan/ link, '
+                . 'including after browser-rendered fallback when configured.',
             );
         }
 
