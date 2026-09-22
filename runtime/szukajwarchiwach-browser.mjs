@@ -98,6 +98,8 @@ try {
         await Promise.allSettled(pending);
 
         if (isObjectViewer(targetUrl)) {
+            await captureExplicitPhotoAsset(context, page, candidates, timeoutMs);
+
             const publicViewerUrl = await discoverPublicScanViewerUrl(page);
             if (publicViewerUrl !== null) {
                 await page.goto(publicViewerUrl, {
@@ -118,6 +120,8 @@ try {
                             await extraPage.waitForLoadState('domcontentloaded', { timeout: Math.min(timeoutMs, 10000) }).catch(() => null);
                             await extraPage.waitForLoadState('networkidle', { timeout: Math.min(timeoutMs, 10000) }).catch(() => null);
                         }
+
+                        await captureExplicitPhotoAsset(context, extraPage, candidates, timeoutMs);
                     }
 
                     await Promise.allSettled(pending);
@@ -163,6 +167,94 @@ try {
     }
 } finally {
     await browser.close();
+}
+
+async function captureExplicitPhotoAsset(context, page, candidates, timeoutMs) {
+    const assetUrl = await discoverExplicitPhotoAssetUrl(page);
+    if (assetUrl === null) {
+        return false;
+    }
+
+    let response;
+    try {
+        response = await context.request.get(assetUrl, {
+            failOnStatusCode: false,
+            timeout: timeoutMs,
+        });
+    } catch {
+        return false;
+    }
+
+    if (response.status() < 200 || response.status() >= 300) {
+        return false;
+    }
+
+    const headers = normalizeHeaders(response.headers());
+    const contentType = (headers['content-type']?.[0] ?? '').toLowerCase();
+
+    let body;
+    try {
+        body = Buffer.from(await response.body());
+    } catch {
+        return false;
+    }
+
+    if (!looksLikeImage(contentType, body)) {
+        return false;
+    }
+
+    candidates.push({
+        status: response.status(),
+        url: response.url(),
+        headers,
+        body,
+    });
+
+    return true;
+}
+
+async function discoverExplicitPhotoAssetUrl(page) {
+    const candidates = await page.evaluate((photoHost) => {
+        const values = new Set();
+
+        for (const anchor of document.querySelectorAll('a[href]')) {
+            try {
+                const url = new URL(anchor.href, document.baseURI);
+                if (url.protocol === 'https:' && url.hostname === photoHost) {
+                    values.add(url.toString());
+                }
+            } catch {
+                // Ignore malformed UI references.
+            }
+        }
+
+        const rawHtml = document.documentElement?.innerHTML ?? '';
+        const normalizedHtml = rawHtml.replaceAll('\\\\/', '/');
+        const pattern = /https:\/\/photos\.szukajwarchiwach\.gov\.pl\/[A-Za-z0-9._~-]+/g;
+        for (const match of normalizedHtml.matchAll(pattern)) {
+            values.add(match[0]);
+        }
+
+        return [...values];
+    }, PHOTO_HOST).catch(() => []);
+
+    return candidates
+        .filter((candidate) => {
+            try {
+                const url = new URL(candidate);
+                return url.protocol === 'https:' && url.hostname === PHOTO_HOST;
+            } catch {
+                return false;
+            }
+        })
+        .sort((left, right) => {
+            const qualityDifference = imageQualityRank(right) - imageQualityRank(left);
+            if (qualityDifference !== 0) {
+                return qualityDifference;
+            }
+
+            return left.localeCompare(right);
+        })[0] ?? null;
 }
 
 async function discoverPublicScanViewerUrl(page) {
