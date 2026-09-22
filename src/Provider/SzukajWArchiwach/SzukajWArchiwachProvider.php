@@ -161,7 +161,12 @@ final class SzukajWArchiwachProvider implements ScanProviderInterface, ScanCatal
 
             $pageHash = hash('sha256', $response->body);
             $pageHashes[$nextPageUrl] = $pageHash;
+            $pageEntryCounts[$nextPageUrl] = count($parsed->scanEntries);
             $responseCorpus .= $nextPageUrl . "\n" . $response->body . "\n";
+
+            if ($parsed->nextPageUrl !== null && count($parsed->scanEntries) > 0) {
+                $observedPageSize = count($parsed->scanEntries);
+            }
 
             foreach ($parsed->scanEntries as $entry) {
                 if (isset($seenObjectIds[$entry['object_id']])) {
