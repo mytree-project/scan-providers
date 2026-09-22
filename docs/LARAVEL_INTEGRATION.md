@@ -18,7 +18,7 @@ ScanAssetStorageInterface
 
 `ScanProviderRegistry` should receive registered provider services through dependency injection/tagging rather than reading framework configuration inside the core library. M7 owns this MyTree/Laravel registration; completing the P2 standalone CLI does not pre-empt that work.
 
-For Szukaj w Archiwach, M7 may additionally compose a browser-aware infrastructure adapter because current live viewer/image acquisition can require a browser-established session. The reusable provider keeps URL/viewer interpretation on the provider side; Laravel domain/application code must not parse Szukaj w Archiwach HTML or know the `photos.szukajwarchiwach.gov.pl` asset convention. Chromium/Playwright belongs in Infrastructure/composition, with bounded ephemeral sessions and no persistence/logging of cookie values. Normal CI remains offline through fakes/fixtures.
+For Szukaj w Archiwach, browser-aware live transport is implemented and owned by the standalone `scan-providers` runtime because the package is also an independently usable scan-acquisition tool. M7 must reuse/configure that capability rather than introduce a Laravel-specific browser workaround. URL/viewer interpretation remains on the provider side; Laravel domain/application code must not parse Szukaj w Archiwach HTML or know the `photos.szukajwarchiwach.gov.pl` asset convention. Chromium/Playwright remains an infrastructure/runtime concern with bounded ephemeral sessions and no persistence/logging of cookie values. Normal CI remains offline through fakes/fixtures.
 
 ## Suggested MyTree flow
 
