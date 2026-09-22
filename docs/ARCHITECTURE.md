@@ -74,6 +74,8 @@ Routing is provider-driven. There is no central switch over known domains. If ze
 
 The standalone CLI uses `DefaultScanProviderRegistryFactory` as a small composition root. The factory registers the completed Genealodzy Skanoteka and Szukaj w Archiwach adapters in the normal registry; it does not duplicate routing rules. Future framework composition roots may register the same provider services independently through dependency injection.
 
+A standalone tool may depend on additional infrastructure without making that infrastructure part of the domain contract. In particular, a provider runtime may compose a browser-session transport implemented with Playwright/Chromium while `ScanProviderInterface`, `ScanCatalogDiscoveryInterface` and the serialized domain shapes remain free of browser-specific types.
+
 ## Genealodzy Skanoteka provider
 
 Routing target:
@@ -123,9 +125,9 @@ For download, the provider opens the exact object viewer and extracts one suppor
 
 The token is treated as opaque provider data. Live testing on 2026-09-22 established that this route is an HTML viewer locator rather than the raw image asset. The adapter deliberately ignores undocumented `/o/pliki-api/...` routes as public contracts. Missing or non-unique public viewer links fail explicitly.
 
-The standalone `NativeHttpClient` may receive viewer HTML at the raw-asset step. That outcome is reported explicitly as `ScanCapabilityUnavailableException` requiring browser-aware transport rather than being accepted as an image. A successful browser PoC observed the real JPEG as a separate subresource from `photos.szukajwarchiwach.gov.pl`; the observed URL shape is compatibility evidence, not a stable derivation contract. Production browser-session transport is deferred to M7/MyTree infrastructure behind a replaceable boundary. A small provider-specific retry collaborator continues to supply the same bounded transport/`429`/`5xx` policy to the standalone catalog/viewer requests.
+The standalone `NativeHttpClient` may receive viewer HTML at the raw-asset step. That outcome is reported explicitly as `ScanCapabilityUnavailableException` requiring browser-aware transport rather than being accepted as an image. A successful browser PoC observed the real JPEG as a separate subresource from `photos.szukajwarchiwach.gov.pl`; the observed URL shape is compatibility evidence, not a stable derivation contract. P2 therefore requires a browser-aware infrastructure transport inside the standalone `scan-providers` runtime. Chromium/Playwright may be an infrastructure dependency while the public/domain contracts remain browser-agnostic. A small provider-specific retry collaborator continues to supply the same bounded transport/`429`/`5xx` policy to normal HTTP requests.
 
-The standalone CLI exposes the provider only through the existing `DiscoverScans`, `ResolveScan` and `DownloadScan` application services. No parallel provider-specific orchestration API exists. `ResolveScan` can resolve an exact public `/skan/...` viewer locator with strategy `public_scan_viewer_url`; current standalone live `DownloadScan` may report browser-aware transport as unavailable. Legacy `szukajwarchiwach.pl` URLs are not claimed or mechanically rewritten by provider routing.
+The standalone CLI exposes the provider only through the existing `DiscoverScans`, `ResolveScan` and `DownloadScan` application services. No parallel provider-specific orchestration API exists. `ResolveScan` can resolve an exact public `/skan/...` viewer locator with strategy `public_scan_viewer_url`. The final standalone composition root must select/use browser-aware infrastructure when required so `DownloadScan` can complete the supported live flow. Legacy `szukajwarchiwach.pl` URLs are not claimed or mechanically rewritten by provider routing.
 
 See [SZUKAJWARCHIWACH.md](SZUKAJWARCHIWACH.md).
 
