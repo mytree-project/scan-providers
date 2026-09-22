@@ -125,6 +125,10 @@ async function capturePhotoCandidate(response, candidates) {
         return;
     }
 
+    if (response.status() < 200 || response.status() >= 300) {
+        return;
+    }
+
     const headers = normalizeHeaders(response.headers());
     const contentType = (headers['content-type']?.[0] ?? '').toLowerCase();
     if (!contentType.startsWith('image/')) {
