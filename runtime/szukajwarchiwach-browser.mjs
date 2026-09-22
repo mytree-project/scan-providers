@@ -98,19 +98,30 @@ try {
         await Promise.allSettled(pending);
 
         if (isObjectViewer(targetUrl)) {
-            const activated = await activatePrimaryPhoto(page);
-            if (activated) {
-                await page.waitForLoadState('networkidle', { timeout: Math.min(timeoutMs, 10000) }).catch(() => null);
-                await page.waitForTimeout(3500);
-
-                for (const extraPage of context.pages()) {
-                    if (extraPage !== page) {
-                        await extraPage.waitForLoadState('domcontentloaded', { timeout: Math.min(timeoutMs, 10000) }).catch(() => null);
-                        await extraPage.waitForLoadState('networkidle', { timeout: Math.min(timeoutMs, 10000) }).catch(() => null);
-                    }
-                }
-
+            const publicViewerUrl = await discoverPublicScanViewerUrl(page);
+            if (publicViewerUrl !== null) {
+                await page.goto(publicViewerUrl, {
+                    waitUntil: 'domcontentloaded',
+                    timeout: timeoutMs,
+                });
+                await page.waitForLoadState('networkidle', { timeout: Math.min(timeoutMs, 15000) }).catch(() => null);
+                await page.waitForTimeout(2500);
                 await Promise.allSettled(pending);
+            } else {
+                const activated = await activatePrimaryPhoto(page);
+                if (activated) {
+                    await page.waitForLoadState('networkidle', { timeout: Math.min(timeoutMs, 10000) }).catch(() => null);
+                    await page.waitForTimeout(3500);
+
+                    for (const extraPage of context.pages()) {
+                        if (extraPage !== page) {
+                            await extraPage.waitForLoadState('domcontentloaded', { timeout: Math.min(timeoutMs, 10000) }).catch(() => null);
+                            await extraPage.waitForLoadState('networkidle', { timeout: Math.min(timeoutMs, 10000) }).catch(() => null);
+                        }
+                    }
+
+                    await Promise.allSettled(pending);
+                }
             }
         }
 
@@ -121,7 +132,7 @@ try {
             );
         }
 
-        candidates.sort((left, right) => right.body.length - left.body.length);
+        candidates.sort(compareImageCandidates);
         const selected = candidates[0];
 
         emit({
@@ -133,6 +144,73 @@ try {
     }
 } finally {
     await browser.close();
+}
+
+async function discoverPublicScanViewerUrl(page) {
+    const candidate = await page.evaluate(() => {
+        const pattern = /https?:\\/\\/(?:www\\.)?szukajwarchiwach\\.gov\\.pl\\/skan\\/-\\/skan\\/[A-Za-z0-9_-]+|\\/skan\\/-\\/skan\\/[A-Za-z0-9_-]+/g;
+        const values = new Set();
+
+        for (const anchor of document.querySelectorAll('a[href]')) {
+            if (anchor.href.includes('/skan/-/skan/')) {
+                values.add(anchor.href);
+            }
+        }
+
+        const html = document.documentElement?.innerHTML ?? '';
+        for (const match of html.matchAll(pattern)) {
+            values.add(match[0]);
+        }
+
+        return [...values][0] ?? null;
+    }).catch(() => null);
+
+    if (candidate === null) {
+        return null;
+    }
+
+    try {
+        const url = new URL(candidate, page.url());
+        if (
+            url.protocol === 'https:'
+            && ['szukajwarchiwach.gov.pl', 'www.szukajwarchiwach.gov.pl'].includes(url.hostname)
+            && /^\\/skan\\/-\\/skan\\/[A-Za-z0-9_-]+\\/?$/.test(url.pathname)
+        ) {
+            return url.toString();
+        }
+    } catch {
+        return null;
+    }
+
+    return null;
+}
+
+function compareImageCandidates(left, right) {
+    const qualityDifference = imageQualityRank(right.url) - imageQualityRank(left.url);
+    if (qualityDifference !== 0) {
+        return qualityDifference;
+    }
+
+    return right.body.length - left.body.length;
+}
+
+function imageQualityRank(url) {
+    try {
+        const pathname = new URL(url).pathname.toLowerCase();
+        if (pathname.endsWith('_max')) {
+            return 3;
+        }
+        if (pathname.endsWith('_mid')) {
+            return 2;
+        }
+        if (pathname.endsWith('_min') || pathname.endsWith('_thumb')) {
+            return 1;
+        }
+    } catch {
+        return 0;
+    }
+
+    return 0;
 }
 
 function isObjectViewer(url) {
