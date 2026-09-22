@@ -53,19 +53,32 @@ final readonly class SzukajWArchiwachAssetDownloader
             $scanViewerUrl = $this->viewerParser->publicScanUrl($browserViewer->body, $browserViewer->url);
         }
 
-        if ($scanViewerUrl === null) {
-            throw new UnexpectedProviderResponseException(
-                'Szukaj w Archiwach object viewer did not expose a recognizable public /skan/-/skan/ link, '
-                . 'including after browser-rendered fallback when configured.',
+        if ($scanViewerUrl === null && $this->browserSessionClient !== null) {
+            $binary = $this->browserSessionClient->fetchScanImage($objectViewerUrl);
+            $mimeType = $this->mimeTypeDetector->detect(
+                $binary->body,
+                $binary->firstHeader('content-type'),
             );
-        }
+            if ($mimeType === null) {
+                throw new UnexpectedProviderResponseException(
+                    'Szukaj w Archiwach browser session did not return a recognized image asset from the object viewer.',
+                );
+            }
+        } else {
+            if ($scanViewerUrl === null) {
+                throw new UnexpectedProviderResponseException(
+                    'Szukaj w Archiwach object viewer did not expose a recognizable public /skan/-/skan/ link '
+                    . 'and browser-session transport is not configured.',
+                );
+            }
 
-        $this->sleepMilliseconds($this->requestPacingMilliseconds);
-        $candidate = $this->fetcher->get($scanViewerUrl, [
-            'Accept' => 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
-            'Referer' => $objectViewerUrl,
-        ]);
-        [$binary, $mimeType] = $this->resolveImageResponse($candidate, $scanViewerUrl);
+            $this->sleepMilliseconds($this->requestPacingMilliseconds);
+            $candidate = $this->fetcher->get($scanViewerUrl, [
+                'Accept' => 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+                'Referer' => $objectViewerUrl,
+            ]);
+            [$binary, $mimeType] = $this->resolveImageResponse($candidate, $scanViewerUrl);
+        }
 
         $stored = $storage->store(
             $this->suggestedFilename($unitId, $objectId, $mimeType),
