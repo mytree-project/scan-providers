@@ -288,6 +288,56 @@ HTML;
         );
     }
 
+    public function testItContinuesOfficialPaginationWhenAFullPageOmitsTheNextLink(): void
+    {
+        $http = new FakeHttpClient();
+        $pageTwo = self::UNIT_URL
+            . '?_Jednostka_delta=2&_Jednostka_resetCur=false&_Jednostka_cur=2&_Jednostka_id_jednostki=990004';
+        $pageThree = self::UNIT_URL
+            . '?_Jednostka_delta=2&_Jednostka_resetCur=false&_Jednostka_cur=3&_Jednostka_id_jednostki=990004';
+
+        $http->respond(self::UNIT_URL, new HttpResponse(
+            200,
+            ['content-type' => ['text/html']],
+            '<!doctype html><html><body>'
+                . '<a data-plikid="700001">Skan 1</a>'
+                . '<a data-plikid="700002">Skan 2</a>'
+                . '<a href="' . htmlspecialchars($pageTwo, ENT_QUOTES | ENT_HTML5, 'UTF-8') . '">2</a>'
+                . '</body></html>',
+            self::UNIT_URL,
+        ));
+        $http->respond($pageTwo, new HttpResponse(
+            200,
+            ['content-type' => ['text/html']],
+            '<!doctype html><html><body>'
+                . '<a data-plikid="700003">Skan 3</a>'
+                . '<a data-plikid="700004">Skan 4</a>'
+                . '</body></html>',
+            $pageTwo,
+        ));
+        $http->respond($pageThree, new HttpResponse(
+            200,
+            ['content-type' => ['text/html']],
+            '<!doctype html><html><body>'
+                . '<a data-plikid="700005">Skan 5</a>'
+                . '</body></html>',
+            $pageThree,
+        ));
+
+        $registry = new ScanProviderRegistry([$this->provider($http)]);
+        $resolution = (new ResolveScan($registry))->execute(new ResolveScanRequest(
+            new ScanResourceReference(self::UNIT_URL),
+            new ScanLocatorHints(scanNumberRaw: '5'),
+        ));
+
+        self::assertSame(ScanResolutionStatus::Resolved, $resolution->status);
+        self::assertNotNull($resolution->resolved);
+        self::assertSame('700005', $resolution->resolved->scan->remoteId);
+        self::assertSame(5, $resolution->resolved->catalogProvenance->details['scan_count']);
+        self::assertSame(3, $resolution->resolved->catalogProvenance->details['page_count']);
+        self::assertSame([self::UNIT_URL, $pageTwo, $pageThree], $http->requests);
+    }
+
     public function testItEnumeratesOfficialLiferayPaginationWhenDeclaredScanCountIsAbsent(): void
     {
         $http = new FakeHttpClient();
