@@ -8,7 +8,7 @@ Provider key:
 szukajwarchiwach
 ```
 
-The P2 package implementation provides fixture-backed catalog discovery, deterministic ordinal resolution, per-object asset download, default standalone registry/CLI exposure and compatible serialized output for a known current unit URL. Live compatibility testing on 2026-09-18 additionally established that current unit/catalog requests from a simple non-browser HTTP client can be soft-blocked by Imperva/Incapsula:
+The P2 package implementation provides fixture-backed catalog discovery, deterministic ordinal resolution, per-object viewer resolution, default standalone registry/CLI exposure and compatible serialized output for a known current unit URL. Live compatibility testing established that current unit/catalog requests from a simple non-browser HTTP client can be soft-blocked by Imperva/Incapsula, while a 2026-09-22 Playwright/Chromium PoC confirmed that the current scan viewer itself can be loaded successfully through a browser session:
 
 ```text
 https://www.szukajwarchiwach.gov.pl/jednostka/-/jednostka/<unit-id>
@@ -80,7 +80,7 @@ A resolved result retains the exact provider object/file locator selected from c
 
 The serialized result remains `mytree.scan-resolution.v1`; the provider behavior does not change the public result shape.
 
-## Official direct scan links
+## Official public scan viewer links
 
 The portal's side panel exposes an official **Link do skanu** in the form:
 
@@ -88,9 +88,13 @@ The portal's side panel exposes an official **Link do skanu** in the form:
 https://www.szukajwarchiwach.gov.pl/skan/-/skan/<opaque-token>
 ```
 
-This is already an exact public scan locator and does not need unit-catalog/ordinal resolution. `ResolveScan` therefore returns `resolved` with strategy `direct_public_scan_url` without a network request. `DownloadScan` fetches that same public URL, validates the image MIME type and stores it through `ScanAssetStorageInterface`.
+Live testing on 2026-09-22 established that this URL is an HTML **scan viewer locator**, not the raw image response. `ResolveScan` can still return it deterministically as `resolved` without catalog discovery, using strategy `public_scan_viewer_url`, because the URL identifies one public viewer. It does not invent unit ID, ordinal or provider object ID that the viewer URL does not expose.
 
-A direct scan URL does not itself reveal unit ID, ordinal or provider object ID. Those values are therefore not invented. The raw URL/token and direct-resolution strategy are preserved as the available provenance. When unit/object/ordinal provenance is required, callers should use the unit + ordinal workflow instead.
+The successful browser PoC observed the viewer loading the real JPEG from `photos.szukajwarchiwach.gov.pl`. For the tested token the asset URL ended in `<token>_max`, but that observed shape is compatibility evidence only; it is not treated as a stable undocumented API contract or a deterministic derivation rule.
+
+With the standalone `NativeHttpClient`, `DownloadScan` may receive viewer HTML rather than image bytes. In that case it fails explicitly with `ScanCapabilityUnavailableException` and states that browser-aware transport is required. Production browser-session acquisition is deferred to M7/MyTree infrastructure.
+
+A viewer URL does not itself reveal unit ID, ordinal or provider object ID. Those values are therefore not invented. The raw viewer URL/token and resolution strategy remain available provenance. When unit/object/ordinal provenance is required, callers should use the unit + ordinal workflow instead.
 
 ## Per-object viewer and asset download
 
@@ -103,9 +107,11 @@ ResolvedScan
    ↓
 public object viewer HTML
    ↓
-/skan/-/skan/<opaque-token>
+/skan/-/skan/<opaque-token> scan viewer
    ↓
-validated image response
+standalone NativeHttpClient: explicit browser-transport-required failure
+or
+browser-aware M7 transport: raw image subresource
    ↓
 ScanAssetStorageInterface
 ```
@@ -120,9 +126,9 @@ Undocumented technical routes such as:
 
 are deliberately ignored as provider contracts. A viewer fixture may contain such a decoy route; it is not sufficient for a successful download. If no supported public scan link is exposed, or if multiple distinct supported links are exposed, the adapter fails explicitly rather than guessing.
 
-The public scan URL is fetched through the shared HTTP boundary. The built-in `NativeHttpClient` follows a bounded number of HTTP redirects; `DownloadedScan::downloadUrl` still records the public `/skan/-/skan/<opaque-token>` locator selected from the viewer rather than an undocumented implementation endpoint reached behind it.
+The public scan viewer URL is fetched through the shared HTTP boundary. If that response is HTML, the standalone provider reports that raw image acquisition requires browser-aware transport rather than treating the viewer page as an image. If a future browser-aware transport supplies the actual image response, `DownloadedScan::downloadUrl` records the effective asset URL returned by that transport while `viewerUrl` preserves the public viewer context.
 
-The response must validate as a supported image MIME type. Storage receives a deterministic provider-local filename derived from unit/object identity and MIME extension; file size and SHA-256 remain properties of the stored asset. `mytree.downloaded-scan.v1` is unchanged.
+A successful asset response must validate as a supported image MIME type. Storage receives a deterministic provider-local filename derived from unit/object identity and MIME extension; file size and SHA-256 remain properties of the stored asset. `mytree.downloaded-scan.v1` is unchanged.
 
 ## CLI
 
@@ -142,7 +148,7 @@ php bin/mytree-scan download \
   --output=var/scans
 ```
 
-`resolve` and `download` also accept `--scan-number=<N>` with a fragment-free current unit URL. They additionally accept an official `/skan/-/skan/<opaque-token>` URL directly. `discover --format=json`, resolution output and download output use the existing structured serialization contracts; no Szukaj-w-Archiwach-specific orchestration command is introduced.
+`resolve` and `download` also accept `--scan-number=<N>` with a fragment-free current unit URL. They additionally accept an official `/skan/-/skan/<opaque-token>` viewer URL directly. Resolution is deterministic; current standalone live download may report that browser-aware transport is required. `discover --format=json`, resolution output and download output use the existing structured serialization contracts; no Szukaj-w-Archiwach-specific orchestration command is introduced.
 
 The human-readable discovery table uses provider-neutral columns (`REMOTE ID`, `LABEL`, optional `REMOTE FILENAME`, `LOCATOR`, `VIEWER URL`) so providers without a published remote filename remain usable.
 
@@ -182,7 +188,7 @@ Resolution additionally preserves the original request/locator inputs, requested
 ```text
 original resource URL (including locator fragment when supplied)
 exact per-object viewer URL
-public /skan/-/skan/<opaque-token> download URL
+public /skan/-/skan/<opaque-token> viewer locator and, when available, effective downloaded-asset URL
 resolution strategy
 retrieval timestamp
 MIME type
@@ -204,9 +210,11 @@ No incompatible public shape change is required for P2.
 
 ## Network behavior
 
-This is an undocumented public-web integration. Live testing on 2026-09-18 found that the current service can return an Imperva/Incapsula soft-block page to the standalone HTTP client: HTTP 200, a very small HTML body, `x-iinfo`, and `visid_incap_*` / `incap_ses_*` cookies instead of the requested unit/catalog HTML. External observations of the current service report the same protection, and existing scraper tooling describes the service as stateful and session-dependent.
+This is an undocumented public-web integration. Live testing on 2026-09-18 found that the current service can return an Imperva/Incapsula soft-block page to the standalone HTTP client instead of the requested unit/catalog HTML.
 
-The provider detects this response explicitly and fails with a dedicated anti-bot/session message. It does **not** try to disguise the client, solve challenges, import browser cookies, or otherwise bypass the protection. A future browser-established-session adapter, if accepted for MyTree, must be designed separately from the framework-independent HTTP provider.
+The provider recognizes explicit challenge-page/body/cookie signatures and fails with a dedicated anti-bot/session message. The presence of `x-iinfo` alone is **not** enough to classify a response as blocked: the successful 2026-09-22 browser PoC observed `x-iinfo` on valid viewer and JPEG responses too.
+
+The same 2026-09-22 PoC confirmed that headless Chromium can load the public `/skan/...` viewer and fetch the real JPEG subresource from `photos.szukajwarchiwach.gov.pl`. The standalone package does **not** try to disguise the client, solve challenges, import browser cookies, or embed Playwright. Production browser-session composition is deferred to M7/MyTree infrastructure behind a replaceable boundary.
 
 Network behavior is otherwise deliberately bounded:
 
@@ -219,7 +227,7 @@ Network behavior is otherwise deliberately bounded:
 - malformed, incomplete or cardinality-mismatched responses fail explicitly and are never cached as successful discovery,
 - absence of the historical `Skany (N)` label is not by itself an error when ordered scan entries and official pagination can be enumerated safely,
 - presentation metadata such as the unit title is preserved when recognizable but is not required to resolve an otherwise deterministic unit/object/ordinal catalog,
-- unexpected viewer structure and non-image download responses fail explicitly.
+- unexpected viewer structure, HTML at the raw-image step and non-image download responses fail explicitly.
 
 Normal automated tests never access the live service.
 
@@ -238,14 +246,14 @@ current unit URL
   → v1 serialized outputs + provenance
 ```
 
-They also verify official direct `/skan/-/skan/<opaque-token>` resolution/download, count-less `_Jednostka_cur` pagination, that the default standalone registry still routes Genealodzy Skanoteka correctly, and that legacy `szukajwarchiwach.pl` URLs are not claimed. The `providers` CLI listing is tested without network access.
+They also verify official `/skan/-/skan/<opaque-token>` viewer resolution plus the explicit standalone browser-transport-required download outcome, count-less `_Jednostka_cur` pagination, that a substantial successful viewer response carrying `x-iinfo` is not by itself classified as a soft block, that the default standalone registry still routes Genealodzy Skanoteka correctly, and that legacy `szukajwarchiwach.pl` URLs are not claimed. The `providers` CLI listing is tested without network access.
 
 ## Deferred work / non-goals
 
 The P2 package does not implement:
 
 ```text
-browser-established session / Imperva-compatible live catalog acquisition
+production browser-established session / Imperva-compatible live acquisition (deferred to M7/MyTree infrastructure)
 arbitrary signature -> unit search
 optimized whole-unit/batch download
 legacy URL -> current unit reconciliation
