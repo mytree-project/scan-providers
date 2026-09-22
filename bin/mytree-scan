@@ -20,6 +20,7 @@ use MyTree\ScanProviders\Domain\ScanResourceReference;
 use MyTree\ScanProviders\Infrastructure\DefaultScanProviderRegistryFactory;
 use MyTree\ScanProviders\Infrastructure\LocalFilesystemScanAssetStorage;
 use MyTree\ScanProviders\Infrastructure\NativeHttpClient;
+use MyTree\ScanProviders\Infrastructure\SzukajWArchiwach\PlaywrightBrowserSessionClient;
 
 function usage(int $exit = 0): never
 {
@@ -49,6 +50,8 @@ Common:
   --archive-signature=<raw signature>
   --page=<raw page locator>
   --timeout=60
+  --node=node
+  --browser-worker=<path>
   --help
 TXT;
     fwrite($exit === 0 ? STDOUT : STDERR, $text . PHP_EOL);
@@ -100,7 +103,16 @@ if (isset($opts['help'])) {
 
 $timeout = max(5, (int) ($opts['timeout'] ?? 60));
 $http = new NativeHttpClient(timeoutSeconds: $timeout);
-$registry = DefaultScanProviderRegistryFactory::create($http);
+$nodeBinary = isset($opts['node']) && is_string($opts['node']) ? trim($opts['node']) : 'node';
+$browserWorker = isset($opts['browser-worker']) && is_string($opts['browser-worker'])
+    ? trim($opts['browser-worker'])
+    : null;
+$browserSession = new PlaywrightBrowserSessionClient(
+    nodeBinary: $nodeBinary !== '' ? $nodeBinary : 'node',
+    workerPath: $browserWorker !== '' ? $browserWorker : null,
+    timeoutSeconds: $timeout,
+);
+$registry = DefaultScanProviderRegistryFactory::create($http, $browserSession);
 
 try {
     if ($command === 'providers') {
