@@ -65,11 +65,20 @@ See [docs/SZUKAJWARCHIWACH.md](docs/SZUKAJWARCHIWACH.md).
 - no Laravel dependency
 - browser-agnostic PHP/domain contracts; provider runtime may include Playwright/Chromium infrastructure when required by a live service
 
-Install development dependencies:
+Install PHP dependencies:
 
 ```bash
 composer install
 ```
+
+Install the standalone browser runtime used by current live Szukaj w Archiwach flows:
+
+```bash
+npm ci
+npx playwright install chromium
+```
+
+The Node dependency is pinned in `package-lock.json`. Chromium is launched only when the selected Szukaj w Archiwach operation requires a browser-established session; normal HTTP-only provider operations continue to use `NativeHttpClient`.
 
 ## CLI
 
@@ -189,7 +198,7 @@ php bin/mytree-scan download \
   --output=var/scans
 ```
 
-For the current live service, the standalone `NativeHttpClient` may fail at unit/catalog access or return HTML at the public scan viewer step. Those cases are explicit transport/capability failures rather than successful downloads. The missing P2 work is a browser-aware infrastructure transport inside this standalone tool so the same CLI command can complete the live viewer/session/image flow. MyTree/M7 will integrate that completed capability rather than implement it separately.
+For the current live service, the standalone `NativeHttpClient` may fail at unit/catalog access or return HTML at the public scan viewer step. The standalone composition now includes a Playwright/Chromium browser-session fallback for Szukaj w Archiwach: protected catalog pages can be fetched through a real browser context, and HTML scan viewers can resolve the actual JPEG response loaded from `photos.szukajwarchiwach.gov.pl`. MyTree/M7 will integrate this package capability rather than implement it separately.
 
 ## Public architecture
 
@@ -240,7 +249,7 @@ Normal tests use local fixtures and fake HTTP responses. CI does not depend on t
 ## Current limitations
 
 - Live Szukaj w Archiwach unit/catalog requests may be soft-blocked by the service's current Imperva/Incapsula layer. The standalone HTTP client detects explicit challenge signatures and does not attempt to bypass them; `x-iinfo` alone is not considered proof of a block because successful viewer/image responses may also contain it.
-- Szukaj w Archiwach `/skan/-/skan/<token>` is an HTML viewer locator in the observed live flow, not a raw JPEG URL. Browser-established-session acquisition of the viewer's image subresource is required for standalone P2 completion and belongs to `scan-providers` infrastructure/runtime.
+- Szukaj w Archiwach `/skan/-/skan/<token>` is an HTML viewer locator in the observed live flow, not a raw JPEG URL. The standalone runtime uses Playwright/Chromium when browser-session acquisition is required; live compatibility still needs to be validated for both direct-viewer and known-unit + ordinal CLI flows before P2 closes.
 - Szukaj w Archiwach starts from a known current numeric-unit URL; arbitrary archival-signature-to-unit search is not implemented.
 - Legacy `szukajwarchiwach.pl` URLs are not mechanically migrated by the scan provider.
 - Szukaj w Archiwach uses per-object acquisition; optimized whole-unit/batch download is intentionally deferred.
