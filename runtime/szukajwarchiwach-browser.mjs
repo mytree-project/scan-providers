@@ -57,6 +57,11 @@ try {
         await page.waitForLoadState('networkidle', { timeout: Math.min(timeoutMs, 10000) }).catch(() => null);
 
         const body = Buffer.from(await page.content(), 'utf8');
+        const title = await page.title().catch(() => '');
+        if (isBlockPage(title, body)) {
+            fail(`Browser session received an Imperva/forbidden page for ${page.url()}.`);
+        }
+
         emit({
             status: response.status(),
             url: page.url(),
@@ -154,6 +159,16 @@ function looksLikeImage(contentType, body) {
         (body.length >= 3 && body[0] === 0xff && body[1] === 0xd8 && body[2] === 0xff)
         || (body.length >= 8 && body[0] === 0x89 && body[1] === 0x50 && body[2] === 0x4e && body[3] === 0x47)
     );
+}
+
+function isBlockPage(title, body) {
+    const text = body.subarray(0, Math.min(body.length, 16384)).toString('utf8').toLowerCase();
+    const normalizedTitle = String(title).trim().toLowerCase();
+
+    return normalizedTitle === '403 forbidden'
+        || text.includes('request unsuccessful. incapsula')
+        || text.includes('incapsula incident id')
+        || text.includes('/_incapsula_resource');
 }
 
 function normalizeHeaders(headers) {
