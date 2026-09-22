@@ -126,9 +126,9 @@ Undocumented technical routes such as:
 /o/pliki-api/...
 ```
 
-are deliberately ignored as provider contracts. A viewer fixture may contain such a decoy route; it is not sufficient for a successful download. If no supported public scan link is exposed, or if multiple distinct supported links are exposed, the adapter fails explicitly rather than guessing.
+are deliberately ignored as provider contracts. A viewer fixture may contain such a decoy route; it is not sufficient for a successful download. If static/native object-viewer HTML does not expose a supported public scan link, the browser runtime may inspect the rendered page for the same official `/skan/-/skan/<token>` viewer locator. If that still is not exposed, it may observe the image responses loaded by the object viewer itself. The adapter does not synthesize provider photo URLs. Multiple distinct explicit public scan-viewer locators remain an error rather than a guessing opportunity.
 
-The public scan viewer URL is fetched through the shared HTTP boundary. If that response is HTML, the standalone provider reports that raw image acquisition requires browser-aware transport rather than treating the viewer page as an image. If a future browser-aware transport supplies the actual image response, `DownloadedScan::downloadUrl` records the effective asset URL returned by that transport while `viewerUrl` preserves the public viewer context.
+The public scan viewer URL is fetched through the shared HTTP boundary. If that response is HTML, the standalone browser transport observes the image responses loaded by the viewer. For an object viewer, a preview response such as an observed `_mid` image may appear before the full scan viewer is activated/resolved; the browser runtime therefore continues through the portal's own rendered viewer/navigation behavior and prefers an observed higher-quality image response such as `_max` when available. It never constructs `_max` from the token. `DownloadedScan::downloadUrl` records the effective asset URL actually returned by the portal while `viewerUrl` preserves the provider viewer context.
 
 A successful asset response must validate as a supported image MIME type. Storage receives a deterministic provider-local filename derived from unit/object identity and MIME extension; file size and SHA-256 remain properties of the stored asset. `mytree.downloaded-scan.v1` is unchanged.
 
@@ -255,7 +255,6 @@ They also verify official `/skan/-/skan/<opaque-token>` viewer resolution plus t
 The P2 package does not implement:
 
 ```text
-browser-established session / Imperva-compatible live acquisition in standalone `scan-providers` infrastructure
 arbitrary signature -> unit search
 optimized whole-unit/batch download
 legacy URL -> current unit reconciliation
