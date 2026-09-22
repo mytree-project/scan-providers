@@ -59,7 +59,8 @@ final readonly class RetryingHttpFetcher
 
                     throw new UnexpectedProviderResponseException(sprintf(
                         'Szukaj w Archiwach blocked the HTTP client with Imperva/Incapsula anti-bot protection for %s. '
-                        . 'Browser-session transport is not configured.',
+                        . 'The standalone HTTP client cannot continue this live request without a browser-established session; '
+                        . 'browser-aware transport is not configured.',
                         $url,
                     ));
                 }
