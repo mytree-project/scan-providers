@@ -15,6 +15,7 @@ use MyTree\ScanProviders\Exception\ScanCapabilityUnavailableException;
 use MyTree\ScanProviders\Exception\UnexpectedProviderResponseException;
 use MyTree\ScanProviders\Provider\SzukajWArchiwach\SzukajWArchiwachProvider;
 use MyTree\ScanProviders\Registry\ScanProviderRegistry;
+use MyTree\ScanProviders\Tests\Support\FakeBrowserSessionClient;
 use MyTree\ScanProviders\Tests\Support\FakeHttpClient;
 use MyTree\ScanProviders\Tests\Support\FixedClock;
 use MyTree\ScanProviders\Tests\Support\InMemoryScanAssetStorage;
@@ -92,6 +93,61 @@ final class SzukajWArchiwachDownloadTest extends TestCase
         self::assertSame([self::UNIT_URL, self::VIEWER_URL], $http->requests);
     }
 
+    public function testItFallsBackToBrowserRenderedObjectViewerBeforeDownloadingScan(): void
+    {
+        $http = new FakeHttpClient();
+        $browser = new FakeBrowserSessionClient();
+
+        $http->respond(self::UNIT_URL, new HttpResponse(
+            200,
+            [],
+            $this->fixture('multi-scan.html'),
+            self::UNIT_URL,
+        ));
+        $http->respond(self::VIEWER_URL, new HttpResponse(
+            200,
+            ['content-type' => ['text/html']],
+            $this->fixture('object-viewer-missing.html'),
+            self::VIEWER_URL,
+        ));
+
+        $browser->respondPage(self::VIEWER_URL, new HttpResponse(
+            200,
+            ['content-type' => ['text/html']],
+            $this->fixture('object-viewer.html'),
+            self::VIEWER_URL,
+        ));
+
+        $viewerHtml = '<!doctype html><html><head><title>Skan - Szukaj w Archiwach</title></head><body>viewer</body></html>';
+        $http->respond(self::PUBLIC_SCAN_VIEWER_URL, new HttpResponse(
+            200,
+            ['content-type' => ['text/html;charset=UTF-8']],
+            $viewerHtml,
+            self::PUBLIC_SCAN_VIEWER_URL,
+        ));
+        $browser->respondScanImage(self::PUBLIC_SCAN_VIEWER_URL, $this->imageResponse());
+
+        $provider = $this->provider($http, browserSessionClient: $browser);
+        $resolution = $provider->resolve(new ResolveScanRequest(new ScanResourceReference(self::RESOURCE_URL)));
+        self::assertNotNull($resolution->resolved);
+
+        $result = (new DownloadScan(
+            new ScanProviderRegistry([$provider]),
+            new InMemoryScanAssetStorage(),
+        ))->execute($resolution->resolved);
+
+        self::assertSame(self::PHOTO_ASSET_URL, $result->downloadUrl);
+        self::assertSame([
+            'page:' . self::VIEWER_URL,
+            'scan-image:' . self::PUBLIC_SCAN_VIEWER_URL,
+        ], $browser->requests);
+        self::assertSame([
+            self::UNIT_URL,
+            self::VIEWER_URL,
+            self::PUBLIC_SCAN_VIEWER_URL,
+        ], $http->requests);
+    }
+
     public function testItRetriesTransientViewerAndAssetFailuresWithoutRealSleeps(): void
     {
         $http = new FakeHttpClient();
@@ -158,10 +214,14 @@ final class SzukajWArchiwachDownloadTest extends TestCase
         );
     }
 
-    private function provider(FakeHttpClient $http, int $maxAttempts = 3): SzukajWArchiwachProvider
-    {
+    private function provider(
+        FakeHttpClient $http,
+        int $maxAttempts = 3,
+        ?FakeBrowserSessionClient $browserSessionClient = null,
+    ): SzukajWArchiwachProvider {
         return new SzukajWArchiwachProvider(
             http: $http,
+            browserSessionClient: $browserSessionClient,
             clock: new FixedClock(new DateTimeImmutable('2026-09-17T12:00:00+00:00')),
             maxAttempts: $maxAttempts,
             retryBackoffMilliseconds: 0,
