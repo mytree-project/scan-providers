@@ -229,7 +229,7 @@ async function discoverExplicitPhotoAssetUrl(page) {
         }
 
         const rawHtml = document.documentElement?.innerHTML ?? '';
-        const normalizedHtml = rawHtml.replaceAll('\\\\/', '/');
+        const normalizedHtml = rawHtml.replaceAll('\\/', '/');
         const pattern = /https:\/\/photos\.szukajwarchiwach\.gov\.pl\/[A-Za-z0-9._~-]+/g;
         for (const match of normalizedHtml.matchAll(pattern)) {
             values.add(match[0]);
@@ -259,7 +259,7 @@ async function discoverExplicitPhotoAssetUrl(page) {
 
 async function discoverPublicScanViewerUrl(page) {
     const candidate = await page.evaluate(() => {
-        const pattern = /https?:\\/\\/(?:www\\.)?szukajwarchiwach\\.gov\\.pl\\/skan\\/-\\/skan\\/[A-Za-z0-9_-]+|\\/skan\\/-\\/skan\\/[A-Za-z0-9_-]+/g;
+        const pattern = /https?:\/\/(?:www\.)?szukajwarchiwach\.gov\.pl\/skan\/-\/skan\/[A-Za-z0-9_-]+|\/skan\/-\/skan\/[A-Za-z0-9_-]+/g;
         const values = new Set();
 
         for (const anchor of document.querySelectorAll('a[href]')) {
@@ -292,7 +292,7 @@ async function discoverPublicScanViewerUrl(page) {
         if (
             url.protocol === 'https:'
             && ['szukajwarchiwach.gov.pl', 'www.szukajwarchiwach.gov.pl'].includes(url.hostname)
-            && /^\\/skan\\/-\\/skan\\/[A-Za-z0-9_-]+\\/?$/.test(url.pathname)
+            && /^\/skan\/-\/skan\/[A-Za-z0-9_-]+\/?$/.test(url.pathname)
         ) {
             return url.toString();
         }
