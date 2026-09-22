@@ -275,7 +275,7 @@ async function discoverPublicScanViewerUrl(page) {
         }
 
         const rawHtml = document.documentElement?.innerHTML ?? '';
-        const normalizedHtml = rawHtml.replaceAll('\\\\/', '/');
+        const normalizedHtml = rawHtml.replaceAll('\\/', '/');
         for (const match of normalizedHtml.matchAll(pattern)) {
             values.add(match[0]);
         }
