@@ -93,7 +93,7 @@ final class SzukajWArchiwachDownloadTest extends TestCase
         self::assertSame([self::UNIT_URL, self::VIEWER_URL], $http->requests);
     }
 
-    public function testItFallsBackToBrowserRenderedObjectViewerBeforeDownloadingScan(): void
+    public function testItCapturesImageDirectlyFromBrowserObjectViewerWhenNoPublicScanLinkIsExposed(): void
     {
         $http = new FakeHttpClient();
         $browser = new FakeBrowserSessionClient();
@@ -114,18 +114,10 @@ final class SzukajWArchiwachDownloadTest extends TestCase
         $browser->respondPage(self::VIEWER_URL, new HttpResponse(
             200,
             ['content-type' => ['text/html']],
-            $this->fixture('object-viewer.html'),
+            $this->fixture('object-viewer-missing.html'),
             self::VIEWER_URL,
         ));
-
-        $viewerHtml = '<!doctype html><html><head><title>Skan - Szukaj w Archiwach</title></head><body>viewer</body></html>';
-        $http->respond(self::PUBLIC_SCAN_VIEWER_URL, new HttpResponse(
-            200,
-            ['content-type' => ['text/html;charset=UTF-8']],
-            $viewerHtml,
-            self::PUBLIC_SCAN_VIEWER_URL,
-        ));
-        $browser->respondScanImage(self::PUBLIC_SCAN_VIEWER_URL, $this->imageResponse());
+        $browser->respondScanImage(self::VIEWER_URL, $this->imageResponse());
 
         $provider = $this->provider($http, browserSessionClient: $browser);
         $resolution = $provider->resolve(new ResolveScanRequest(new ScanResourceReference(self::RESOURCE_URL)));
@@ -136,15 +128,15 @@ final class SzukajWArchiwachDownloadTest extends TestCase
             new InMemoryScanAssetStorage(),
         ))->execute($resolution->resolved);
 
+        self::assertSame(self::VIEWER_URL, $result->viewerUrl);
         self::assertSame(self::PHOTO_ASSET_URL, $result->downloadUrl);
         self::assertSame([
             'page:' . self::VIEWER_URL,
-            'scan-image:' . self::PUBLIC_SCAN_VIEWER_URL,
+            'scan-image:' . self::VIEWER_URL,
         ], $browser->requests);
         self::assertSame([
             self::UNIT_URL,
             self::VIEWER_URL,
-            self::PUBLIC_SCAN_VIEWER_URL,
         ], $http->requests);
     }
 
