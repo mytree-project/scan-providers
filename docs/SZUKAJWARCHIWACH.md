@@ -92,7 +92,9 @@ Live testing on 2026-09-22 established that this URL is an HTML **scan viewer lo
 
 The successful browser PoC observed the viewer loading the real JPEG from `photos.szukajwarchiwach.gov.pl`. For the tested token the asset URL ended in `<token>_max`, but that observed shape is compatibility evidence only; it is not treated as a stable undocumented API contract or a deterministic derivation rule.
 
-With the standalone `NativeHttpClient`, `DownloadScan` may receive viewer HTML rather than image bytes. In that case it fails explicitly with `ScanCapabilityUnavailableException` and states that browser-aware transport is required. This is an interim P2 state, not the final standalone capability: browser-session acquisition must be implemented inside `scan-providers` infrastructure/runtime so the CLI can complete the live download independently of MyTree.
+The standalone runtime now composes a browser-session client for Szukaj w Archiwach. `NativeHttpClient` remains the first path; when an explicitly recognized soft-block is returned during page/catalog retrieval, the provider can fetch that page through Playwright/Chromium. When a public scan viewer returns HTML rather than image bytes, the browser worker opens the canonical viewer and captures the recognized image response loaded from `photos.szukajwarchiwach.gov.pl`.
+
+The browser worker never emits cookie values. It returns only response status, effective URL, headers and body bytes to the PHP infrastructure adapter. Browser sessions are ephemeral and closed after each operation.
 
 A viewer URL does not itself reveal unit ID, ordinal or provider object ID. Those values are therefore not invented. The raw viewer URL/token and resolution strategy remain available provenance. When unit/object/ordinal provenance is required, callers should use the unit + ordinal workflow instead.
 
@@ -111,7 +113,7 @@ public object viewer HTML
    ↓
 standalone NativeHttpClient: explicit browser-transport-required failure
 or
-browser-aware standalone transport: raw image subresource
+browser-aware standalone transport: observed image subresource from photos.szukajwarchiwach.gov.pl
    ↓
 ScanAssetStorageInterface
 ```
