@@ -171,7 +171,8 @@ final class SzukajWArchiwachProvider implements ScanProviderInterface, ScanCatal
                 $rawEntries[] = $entry;
             }
 
-            $nextPageUrl = $parsed->nextPageUrl;
+            $nextPageUrl = $parsed->nextPageUrl
+                ?? $this->syntheticNextCatalogPageUrl($nextPageUrl, count($parsed->scanEntries));
         }
 
         if ($firstPage === null) {
@@ -453,6 +454,52 @@ final class SzukajWArchiwachProvider implements ScanProviderInterface, ScanCatal
         }
 
         return $metadata;
+    }
+
+    private function syntheticNextCatalogPageUrl(string $pageUrl, int $entryCount): ?string
+    {
+        $query = \MyTree\ScanProviders\Support\Url::query($pageUrl);
+        $currentPage = $this->positiveQueryInt($query['_Jednostka_cur'] ?? null);
+        $pageSize = $this->positiveQueryInt($query['_Jednostka_delta'] ?? null);
+        $unitId = $query['_Jednostka_id_jednostki'] ?? null;
+
+        if (
+            $currentPage === null
+            || $pageSize === null
+            || !is_scalar($unitId)
+            || (string) $unitId === ''
+            || $entryCount < $pageSize
+        ) {
+            return null;
+        }
+
+        $parts = parse_url($pageUrl);
+        if (!is_array($parts)) {
+            return null;
+        }
+
+        $query['_Jednostka_cur'] = (string) ($currentPage + 1);
+        $scheme = (string) ($parts['scheme'] ?? 'https');
+        $host = (string) ($parts['host'] ?? 'www.szukajwarchiwach.gov.pl');
+        $path = (string) ($parts['path'] ?? '');
+
+        return $scheme . '://' . $host . $path . '?' . http_build_query(
+            $query,
+            '',
+            '&',
+            PHP_QUERY_RFC3986,
+        );
+    }
+
+    private function positiveQueryInt(mixed $value): ?int
+    {
+        if (!is_scalar($value) || preg_match('~^[1-9]\\d*$~', (string) $value) !== 1) {
+            return null;
+        }
+
+        $validated = filter_var((string) $value, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+
+        return is_int($validated) ? $validated : null;
     }
 
     private function catalogDiagnostics(?string $url, string $body): string
