@@ -1,0 +1,13 @@
+{
+  "name": "@mytree/scan-providers-runtime",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Browser runtime used by the standalone MyTree scan-providers tool.",
+  "type": "module",
+  "scripts": {
+    "browser:install": "playwright install chromium"
+  },
+  "dependencies": {
+    "playwright": "1.63.0"
+  }
+}
