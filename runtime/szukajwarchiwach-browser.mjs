@@ -74,10 +74,15 @@ try {
         const candidates = [];
         const pending = [];
 
-        page.on('response', (response) => {
-            const promise = capturePhotoCandidate(response, candidates);
-            pending.push(promise);
-        });
+        const observePage = (observedPage) => {
+            observedPage.on('response', (response) => {
+                const promise = capturePhotoCandidate(response, candidates);
+                pending.push(promise);
+            });
+        };
+
+        observePage(page);
+        context.on('page', observePage);
 
         const viewerResponse = await page.goto(targetUrl, {
             waitUntil: 'domcontentloaded',
@@ -91,6 +96,23 @@ try {
         await page.waitForLoadState('networkidle', { timeout: Math.min(timeoutMs, 15000) }).catch(() => null);
         await page.waitForTimeout(2500);
         await Promise.allSettled(pending);
+
+        if (isObjectViewer(targetUrl)) {
+            const activated = await activatePrimaryPhoto(page);
+            if (activated) {
+                await page.waitForLoadState('networkidle', { timeout: Math.min(timeoutMs, 10000) }).catch(() => null);
+                await page.waitForTimeout(3500);
+
+                for (const extraPage of context.pages()) {
+                    if (extraPage !== page) {
+                        await extraPage.waitForLoadState('domcontentloaded', { timeout: Math.min(timeoutMs, 10000) }).catch(() => null);
+                        await extraPage.waitForLoadState('networkidle', { timeout: Math.min(timeoutMs, 10000) }).catch(() => null);
+                    }
+                }
+
+                await Promise.allSettled(pending);
+            }
+        }
 
         if (candidates.length === 0) {
             fail(
@@ -111,6 +133,48 @@ try {
     }
 } finally {
     await browser.close();
+}
+
+function isObjectViewer(url) {
+    try {
+        return /\/jednostka\/-\/jednostka\/[1-9]\d*\/obiekty\/[1-9]\d*\/?$/.test(new URL(url).pathname);
+    } catch {
+        return false;
+    }
+}
+
+async function activatePrimaryPhoto(page) {
+    return await page.evaluate((photoHost) => {
+        const images = [...document.images]
+            .filter((image) => {
+                const value = image.currentSrc || image.src;
+                if (!value) {
+                    return false;
+                }
+
+                try {
+                    return new URL(value, document.baseURI).hostname === photoHost;
+                } catch {
+                    return false;
+                }
+            })
+            .sort((left, right) => {
+                const leftArea = (left.naturalWidth || left.width || 0) * (left.naturalHeight || left.height || 0);
+                const rightArea = (right.naturalWidth || right.width || 0) * (right.naturalHeight || right.height || 0);
+
+                return rightArea - leftArea;
+            });
+
+        const image = images[0];
+        if (!image) {
+            return false;
+        }
+
+        const clickable = image.closest('a,button,[role="button"]') ?? image;
+        clickable.click();
+
+        return true;
+    }, photoHost).catch(() => false);
 }
 
 async function capturePhotoCandidate(response, candidates) {
