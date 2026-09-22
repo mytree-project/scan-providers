@@ -142,7 +142,8 @@ final readonly class SzukajWArchiwachAssetDownloader
         if ($isHtml) {
             throw new ScanCapabilityUnavailableException(sprintf(
                 'Szukaj w Archiwach public scan locator %s is an HTML viewer. '
-                . 'Browser-session transport is required but is not configured.',
+                . 'Raw image acquisition requires browser-aware transport; '
+                . 'browser-established session transport is not configured.',
                 $viewerUrl,
             ));
         }
