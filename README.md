@@ -45,9 +45,16 @@ szukajwarchiwach
 host: www.szukajwarchiwach.gov.pl
 ```
 
-The P2 package implementation contains fixture-backed catalog discovery for known current unit URLs, deterministic ordinal resolution from `#scan<N>` deep links or explicit positive `scanNumberRaw` hints, per-object asset download, and official direct `/skan/-/skan/<opaque-token>` links. Current live unit/catalog HTTP requests can be intercepted by the portal's Imperva/Incapsula anti-bot layer; this condition is detected explicitly rather than being misreported as changed provider markup. A direct public scan URL is already an exact locator: `resolve` returns it as resolved without catalog discovery and `download` validates/stores that public asset directly. A unit/ordinal flow still discovers the exact object viewer first and then extracts the same public scan-link family.
+The P2 package implementation contains fixture-backed catalog discovery for known current unit URLs, deterministic ordinal resolution from `#scan<N>` deep links or explicit positive `scanNumberRaw` hints, per-object viewer resolution, default registry/CLI exposure, and support for official `/skan/-/skan/<opaque-token>` **viewer locators**.
 
-The adapter does not use undocumented `/o/pliki-api/...` endpoints as its download contract. For unit discovery it preserves the numeric unit ID, ordered scan ordinals, provider object/file locators and unit metadata/provenance. When `Skany (N)` / `Scans (N)` is present it is verified against complete enumeration; when current HTML omits that label, the adapter follows the official `_Jednostka_cur` pagination and records the enumerated cardinality explicitly. Zero-scan and paginated units are supported without silently treating unrecognized markup as an empty catalog. Legacy `szukajwarchiwach.pl` URLs are retained as external provenance/locator values and are not mechanically rewritten into current service URLs.
+Live compatibility testing established two distinct transport facts:
+
+- current unit/catalog requests from a simple non-browser HTTP client can be intercepted by the portal's Imperva/Incapsula layer,
+- a 2026-09-22 Playwright/Chromium PoC successfully loaded a public `/skan/-/skan/<token>` viewer and observed the real JPEG as a separate subresource from `photos.szukajwarchiwach.gov.pl`.
+
+The public `/skan/-/skan/<token>` URL is therefore modeled as an HTML viewer locator, not as the raw image asset. `resolve` can identify that viewer deterministically without catalog discovery. The standalone `NativeHttpClient` does not claim to turn the viewer page into the browser-loaded image; when it receives HTML at the image-acquisition step, `DownloadScan` fails explicitly with `ScanCapabilityUnavailableException` and reports that browser-aware transport is required. Production browser-session acquisition is deferred to M7/MyTree infrastructure.
+
+The adapter does not use undocumented `/o/pliki-api/...` endpoints as its public contract. For unit discovery it preserves the numeric unit ID, ordered scan ordinals, provider object/file locators and unit metadata/provenance. When `Skany (N)` / `Scans (N)` is present it is verified against complete enumeration; when current HTML omits that label, the adapter follows the official `_Jednostka_cur` pagination and records the enumerated cardinality explicitly. Zero-scan and paginated units are supported without silently treating unrecognized markup as an empty catalog. Legacy `szukajwarchiwach.pl` URLs are retained as external provenance/locator values and are not mechanically rewritten into current service URLs.
 
 See [docs/SZUKAJWARCHIWACH.md](docs/SZUKAJWARCHIWACH.md).
 
@@ -56,7 +63,7 @@ See [docs/SZUKAJWARCHIWACH.md](docs/SZUKAJWARCHIWACH.md).
 - PHP 8.2+
 - `allow_url_fopen=1` for the built-in standalone HTTP client
 - no Laravel dependency
-- no Selenium/browser dependency
+- no Selenium/browser dependency in the standalone package
 
 Install development dependencies:
 
@@ -66,7 +73,7 @@ composer install
 
 ## CLI
 
-The standalone CLI registers both completed providers through the same `ScanProviderRegistry` extension boundary used by the application services.
+The standalone CLI registers both completed provider adapters through the same `ScanProviderRegistry` extension boundary used by the application services.
 
 List registered providers:
 
@@ -139,7 +146,7 @@ php bin/mytree-scan resolve \
   --scan-number=42
 ```
 
-An official public **Link do skanu** can also be resolved directly:
+An official public **Link do skanu** viewer can also be resolved directly:
 
 ```bash
 php bin/mytree-scan resolve \
@@ -166,7 +173,7 @@ php bin/mytree-scan download \
   --output=var/scans
 ```
 
-Szukaj w Archiwach example:
+The Szukaj w Archiwach command surface remains the same:
 
 ```bash
 php bin/mytree-scan download \
@@ -174,7 +181,7 @@ php bin/mytree-scan download \
   --output=var/scans
 ```
 
-The official direct scan link works as well:
+and accepts an official viewer locator:
 
 ```bash
 php bin/mytree-scan download \
@@ -182,7 +189,7 @@ php bin/mytree-scan download \
   --output=var/scans
 ```
 
-The result carries the remote resource URL, viewer URL, resolved download URL, retrieval timestamp, SHA-256, file size and resolution strategy together with provider/catalog provenance.
+For the current live service, the standalone `NativeHttpClient` may fail at unit/catalog access or return HTML at the public scan viewer step. Those cases are explicit transport/capability failures rather than successful downloads. A later M7 browser-aware transport may supply the actual browser-loaded image response without changing the provider-facing command/use-case surface.
 
 ## Public architecture
 
@@ -232,7 +239,8 @@ Normal tests use local fixtures and fake HTTP responses. CI does not depend on t
 
 ## Current limitations
 
-- Live Szukaj w Archiwach unit/catalog requests may be soft-blocked by the service's current Imperva/Incapsula anti-bot layer (HTTP 200 with a tiny challenge page). The standalone HTTP client detects this explicitly and does not attempt to bypass it; browser-established-session integration is separate future work.
+- Live Szukaj w Archiwach unit/catalog requests may be soft-blocked by the service's current Imperva/Incapsula layer. The standalone HTTP client detects explicit challenge signatures and does not attempt to bypass them; `x-iinfo` alone is not considered proof of a block because successful viewer/image responses may also contain it.
+- Szukaj w Archiwach `/skan/-/skan/<token>` is an HTML viewer locator in the observed live flow, not a raw JPEG URL. Browser-established-session acquisition of the viewer's image subresource is deferred to M7/MyTree infrastructure.
 - Szukaj w Archiwach starts from a known current numeric-unit URL; arbitrary archival-signature-to-unit search is not implemented.
 - Legacy `szukajwarchiwach.pl` URLs are not mechanically migrated by the scan provider.
 - Szukaj w Archiwach uses per-object acquisition; optimized whole-unit/batch download is intentionally deferred.
