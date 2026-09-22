@@ -8,13 +8,13 @@ use DateTimeImmutable;
 use MyTree\ScanProviders\Application\DiscoverScans;
 use MyTree\ScanProviders\Application\DownloadScan;
 use MyTree\ScanProviders\Application\ResolveScan;
-use MyTree\ScanProviders\Domain\DownloadedScan;
 use MyTree\ScanProviders\Domain\HttpResponse;
 use MyTree\ScanProviders\Domain\ResolveScanRequest;
 use MyTree\ScanProviders\Domain\ScanCatalog;
 use MyTree\ScanProviders\Domain\ScanLocatorHints;
 use MyTree\ScanProviders\Domain\ScanResolutionStatus;
 use MyTree\ScanProviders\Domain\ScanResourceReference;
+use MyTree\ScanProviders\Exception\ScanCapabilityUnavailableException;
 use MyTree\ScanProviders\Provider\SzukajWArchiwach\SzukajWArchiwachProvider;
 use MyTree\ScanProviders\Registry\ScanProviderRegistry;
 use MyTree\ScanProviders\Tests\Support\FakeHttpClient;
@@ -27,15 +27,15 @@ final class SzukajWArchiwachOfficialLinksTest extends TestCase
     private const UNIT_URL = 'https://www.szukajwarchiwach.gov.pl/jednostka/-/jednostka/990004';
     private const PAGE_TWO = self::UNIT_URL
         . '?_Jednostka_delta=20&_Jednostka_resetCur=false&_Jednostka_cur=2&_Jednostka_id_jednostki=990004';
-    private const PUBLIC_SCAN_URL = 'https://www.szukajwarchiwach.gov.pl/skan/-/skan/'
+    private const PUBLIC_SCAN_VIEWER_URL = 'https://www.szukajwarchiwach.gov.pl/skan/-/skan/'
         . '3628fd030c0f3c8b8e785a3724235e654775f21fd483fcc668e0af77a69359a7';
 
-    public function testItResolvesOfficialDirectPublicScanLinkWithoutCatalogDiscovery(): void
+    public function testItResolvesOfficialPublicScanViewerWithoutCatalogDiscoveryAndRequiresBrowserTransportForImage(): void
     {
         $http = new FakeHttpClient();
         $provider = $this->provider($http);
         $registry = new ScanProviderRegistry([$provider]);
-        $resource = new ScanResourceReference(self::PUBLIC_SCAN_URL);
+        $resource = new ScanResourceReference(self::PUBLIC_SCAN_VIEWER_URL);
 
         self::assertSame(SzukajWArchiwachProvider::KEY, $registry->forResource($resource)->key());
 
@@ -50,29 +50,34 @@ final class SzukajWArchiwachOfficialLinksTest extends TestCase
 
         $resolution = (new ResolveScan($registry))->execute(new ResolveScanRequest($resource));
         self::assertSame(ScanResolutionStatus::Resolved, $resolution->status);
-        self::assertSame(SzukajWArchiwachProvider::DIRECT_PUBLIC_SCAN_STRATEGY, $resolution->strategy);
+        self::assertSame(SzukajWArchiwachProvider::PUBLIC_SCAN_VIEWER_STRATEGY, $resolution->strategy);
         self::assertNotNull($resolution->resolved);
-        self::assertSame(self::PUBLIC_SCAN_URL, $resolution->resolved->scan->viewerUrl);
-        self::assertSame(self::PUBLIC_SCAN_URL, $resolution->resolved->matchedHintRaw);
+        self::assertSame(self::PUBLIC_SCAN_VIEWER_URL, $resolution->resolved->scan->viewerUrl);
+        self::assertSame(self::PUBLIC_SCAN_VIEWER_URL, $resolution->resolved->matchedHintRaw);
         self::assertSame([], $http->requests);
 
-        $jpeg = "\xFF\xD8\xFF\xE0DIRECT-SZWA";
-        $http->respond(self::PUBLIC_SCAN_URL, new HttpResponse(
+        $viewerHtml = '<!doctype html><html><head><title>Skan - Szukaj w Archiwach</title></head>'
+            . '<body>' . str_repeat('viewer-content-', 100) . '</body></html>';
+        $http->respond(self::PUBLIC_SCAN_VIEWER_URL, new HttpResponse(
             200,
-            ['content-type' => ['image/jpeg']],
-            $jpeg,
-            self::PUBLIC_SCAN_URL,
+            [
+                'content-type' => ['text/html;charset=UTF-8'],
+                'x-iinfo' => ['14-39368798-0 0NNN'],
+            ],
+            $viewerHtml,
+            self::PUBLIC_SCAN_VIEWER_URL,
         ));
 
         $storage = new InMemoryScanAssetStorage();
-        $downloaded = (new DownloadScan($registry, $storage))->execute($resolution->resolved);
+        try {
+            (new DownloadScan($registry, $storage))->execute($resolution->resolved);
+            self::fail('Expected browser-aware transport requirement for an HTML scan viewer.');
+        } catch (ScanCapabilityUnavailableException $exception) {
+            self::assertStringContainsString('HTML viewer', $exception->getMessage());
+            self::assertStringContainsString('browser-aware transport', $exception->getMessage());
+        }
 
-        self::assertSame(DownloadedScan::SCHEMA, $downloaded->jsonSerialize()['schema']);
-        self::assertSame(self::PUBLIC_SCAN_URL, $downloaded->resourceUrl);
-        self::assertSame(self::PUBLIC_SCAN_URL, $downloaded->viewerUrl);
-        self::assertSame(self::PUBLIC_SCAN_URL, $downloaded->downloadUrl);
-        self::assertSame(hash('sha256', $jpeg), $downloaded->asset->sha256);
-        self::assertSame([self::PUBLIC_SCAN_URL], $http->requests);
+        self::assertSame([self::PUBLIC_SCAN_VIEWER_URL], $http->requests);
     }
 
     public function testItFallsBackFromUnitShellToOfficialCatalogPaginationUrl(): void
