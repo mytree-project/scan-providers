@@ -15,6 +15,7 @@ final class DefaultScanProviderRegistryFactory
     public static function create(
         HttpClientInterface $http,
         ?BrowserSessionClientInterface $szukajWArchiwachBrowserSession = null,
+        bool $preferSzukajWArchiwachBrowserPages = false,
     ): ScanProviderRegistry
     {
         return new ScanProviderRegistry([
@@ -22,6 +23,7 @@ final class DefaultScanProviderRegistryFactory
             new SzukajWArchiwachProvider(
                 http: $http,
                 browserSessionClient: $szukajWArchiwachBrowserSession,
+                preferBrowserPages: $preferSzukajWArchiwachBrowserPages,
             ),
         ]);
     }
