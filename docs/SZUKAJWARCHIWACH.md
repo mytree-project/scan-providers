@@ -8,7 +8,7 @@ Provider key:
 szukajwarchiwach
 ```
 
-The P2 package implementation provides fixture-backed catalog discovery, deterministic ordinal resolution, per-object viewer resolution, default standalone registry/CLI exposure and compatible serialized output for a known current unit URL. Live compatibility testing established that current unit/catalog requests from a simple non-browser HTTP client can be soft-blocked by Imperva/Incapsula, while a 2026-09-22 Playwright/Chromium PoC confirmed that the current scan viewer itself can be loaded successfully through a browser session:
+The P2 package implementation provides fixture-backed catalog discovery, deterministic ordinal resolution, per-object viewer resolution, default standalone registry/CLI exposure and compatible serialized output for a known current unit URL. Live compatibility testing established that current unit/catalog requests from a simple non-browser HTTP client can be soft-blocked by Imperva/Incapsula **or can return successful-looking but incomplete catalog HTML**. Playwright/Chromium testing confirmed that the current browser-visible catalog and scan viewers can be acquired reliably through a real browser session:
 
 ```text
 https://www.szukajwarchiwach.gov.pl/jednostka/-/jednostka/<unit-id>
@@ -32,19 +32,22 @@ is not claimed by the provider and is not mechanically rewritten. Such legacy va
 
 ## Catalog discovery
 
-`SzukajWArchiwachProvider` implements `ScanCatalogDiscoveryInterface`. Discovery:
+`SzukajWArchiwachProvider` implements `ScanCatalogDiscoveryInterface`. In the standalone CLI, current SZA unit/catalog pages are retrieved through the configured browser-session capability rather than trusting Native HTTP page content. This is a correctness decision, not merely an anti-bot fallback: a 2026-09-23 diagnostic run showed that Chromium rendered the complete unit `11959850` catalog as seven 20-entry pages plus a final 14-entry page (154 scans total), while earlier successful-looking Native HTTP runs had produced partial 60/40-entry catalogs.
+
+Discovery:
 
 - reads the public unit HTML rather than an undocumented service API,
 - if the bare unit page is only a presentation shell with no scan entries/count, retries discovery through the portal's own `_Jednostka_delta=200`, `_Jednostka_cur=1`, `_Jednostka_id_jednostki=<id>` catalog URL,
 - uses `Skany (N)` / `Scans (N)` as the declared digital scan cardinality when that label is present,
 - accepts an explicit declared zero as a valid empty catalog,
 - follows the public catalog pagination in order, including the current Liferay-style `_Jednostka_cur` links,
+- can infer the effective returned page size from observed browser-visible entries instead of assuming `_Jednostka_delta` equals the number actually rendered,
 - verifies complete enumeration against a declared cardinality when available,
 - otherwise records the safely enumerated catalog cardinality and marks its provenance as `enumerated_catalog`,
 - preserves the provider object/file locator from `data-plikid` as `AvailableScan::remoteId`,
 - assigns a stable one-based `scan_ordinal` from the complete ordered catalog,
 - derives the public object viewer route from the discovered unit ID plus exact object ID,
-- keeps the unit ID, metadata, raw metadata fields, per-page hashes and complete discovery hash in provenance.
+- keeps the unit ID, metadata, raw metadata fields, per-page hashes, per-page entry counts and complete discovery hash in provenance.
 
 A discovered scan uses the exact public viewer context:
 
@@ -92,9 +95,9 @@ Live testing on 2026-09-22 established that this URL is an HTML **scan viewer lo
 
 The successful browser PoC observed the viewer loading the real JPEG from `photos.szukajwarchiwach.gov.pl`. For the tested token the asset URL ended in `<token>_max`, but that observed shape is compatibility evidence only; it is not treated as a stable undocumented API contract or a deterministic derivation rule.
 
-The standalone runtime now composes a browser-session client for Szukaj w Archiwach. `NativeHttpClient` remains the first path; when an explicitly recognized soft-block is returned during page/catalog retrieval, the provider can fetch that page through Playwright/Chromium. When a public scan viewer returns HTML rather than image bytes, the browser worker opens the canonical viewer and captures the recognized image response loaded from `photos.szukajwarchiwach.gov.pl`.
+The standalone runtime composes a browser-session client for Szukaj w Archiwach. Current unit/catalog pages are intentionally read through that browser capability because Native HTTP cannot prove catalog completeness. When a public scan viewer returns HTML rather than image bytes, the browser worker opens the canonical viewer and captures the recognized image response loaded from `photos.szukajwarchiwach.gov.pl`.
 
-The browser worker never emits cookie values. It returns only response status, effective URL, headers and body bytes to the PHP infrastructure adapter. Browser sessions are ephemeral and closed after each operation.
+The browser worker never emits cookie values. It returns only response status, effective URL, headers and body bytes to the PHP infrastructure adapter. Browser sessions are bounded and ephemeral and are closed after each operation.
 
 A viewer URL does not itself reveal unit ID, ordinal or provider object ID. Those values are therefore not invented. The raw viewer URL/token and resolution strategy remain available provenance. When unit/object/ordinal provenance is required, callers should use the unit + ordinal workflow instead.
 
@@ -107,13 +110,12 @@ ResolvedScan
    ↓
 /jednostka/-/jednostka/<unit-id>/obiekty/<object-id>
    ↓
-public object viewer HTML
+browser-rendered public object viewer
    ↓
-/skan/-/skan/<opaque-token> scan viewer
+provider-emitted /skan/-/skan/<opaque-token> viewer when exposed
+or browser-observed image response
    ↓
-standalone NativeHttpClient: explicit browser-transport-required failure
-or
-browser-aware standalone transport: observed image subresource from photos.szukajwarchiwach.gov.pl
+recognized image subresource from photos.szukajwarchiwach.gov.pl
    ↓
 ScanAssetStorageInterface
 ```
@@ -128,7 +130,7 @@ Undocumented technical routes such as:
 
 are deliberately ignored as provider contracts. A viewer fixture may contain such a decoy route; it is not sufficient for a successful download. If static/native object-viewer HTML does not expose a supported public scan link, the browser runtime may inspect the rendered page for the same official `/skan/-/skan/<token>` viewer locator. If that still is not exposed, it may observe the image responses loaded by the object viewer itself. The adapter does not synthesize provider photo URLs. Multiple distinct explicit public scan-viewer locators remain an error rather than a guessing opportunity.
 
-The public scan viewer URL is fetched through the shared HTTP boundary. If that response is HTML, the standalone browser transport observes the image responses loaded by the viewer. For an object viewer, a preview response such as an observed `_mid` image may appear before the full scan viewer is activated/resolved; the browser runtime therefore continues through the portal's own rendered viewer/navigation behavior and prefers an observed higher-quality image response such as `_max` when available. It never constructs `_max` from the token. `DownloadedScan::downloadUrl` records the effective asset URL actually returned by the portal while `viewerUrl` preserves the provider viewer context.
+For an object viewer, a preview response such as an observed `_mid` image may appear before the full scan viewer is activated/resolved; the browser runtime therefore continues through the portal's own rendered viewer/navigation behavior and prefers an observed higher-quality image response such as `_max` when available. It never constructs `_max` from the token. `DownloadedScan::downloadUrl` records the effective asset URL actually returned by the portal while `viewerUrl` preserves the provider viewer context.
 
 A successful asset response must validate as a supported image MIME type. Storage receives a deterministic provider-local filename derived from unit/object identity and MIME extension; file size and SHA-256 remain properties of the stored asset. `mytree.downloaded-scan.v1` is unchanged.
 
@@ -150,7 +152,9 @@ php bin/mytree-scan download \
   --output=var/scans
 ```
 
-`resolve` and `download` also accept `--scan-number=<N>` with a fragment-free current unit URL. They additionally accept an official `/skan/-/skan/<opaque-token>` viewer URL directly. Resolution is deterministic; current standalone live download may report that browser-aware transport is required. `discover --format=json`, resolution output and download output use the existing structured serialization contracts; no Szukaj-w-Archiwach-specific orchestration command is introduced.
+`resolve` and `download` also accept `--scan-number=<N>` with a fragment-free current unit URL. They additionally accept an official `/skan/-/skan/<opaque-token>` viewer URL directly. Resolution remains deterministic and the normal standalone SZA path includes the configured Playwright/Chromium runtime. `discover --format=json`, resolution output and download output use the existing structured serialization contracts; no Szukaj-w-Archiwach-specific orchestration command is introduced.
+
+Optional `--browser-debug-dir=<path>` records WebM videos and JSON manifests for the browser operations already performed by the normal SZA runtime. It does not switch transport modes. See `docs/SZUKAJWARCHIWACH_BROWSER_DEBUG.md`.
 
 The human-readable discovery table uses provider-neutral columns (`REMOTE ID`, `LABEL`, optional `REMOTE FILENAME`, `LOCATOR`, `VIEWER URL`) so providers without a published remote filename remain usable.
 
@@ -179,6 +183,7 @@ numeric unit ID
 retrieval timestamp
 complete discovery response SHA-256
 per-page response SHA-256 values
+per-page entry counts / observed page size
 scan count
 page count
 unit metadata + raw fields
@@ -212,24 +217,26 @@ No incompatible public shape change is required for P2.
 
 ## Network behavior
 
-This is an undocumented public-web integration. Live testing on 2026-09-18 found that the current service can return an Imperva/Incapsula soft-block page to the standalone HTTP client instead of the requested unit/catalog HTML.
+This is an undocumented public-web integration. Live testing established two distinct Native HTTP failure modes for current SZA unit/catalog pages:
 
-The provider recognizes explicit challenge-page/body/cookie signatures and fails with a dedicated anti-bot/session message. The presence of `x-iinfo` alone is **not** enough to classify a response as blocked: the successful 2026-09-22 browser PoC observed `x-iinfo` on valid viewer and JPEG responses too.
+- explicit Imperva/Incapsula soft-block content,
+- successful-looking HTTP responses whose rendered catalog is incomplete compared with the browser-visible portal state.
 
-The same 2026-09-22 PoC confirmed that headless Chromium can load the public `/skan/...` viewer and fetch the real JPEG subresource from `photos.szukajwarchiwach.gov.pl`. The standalone package does **not** try to disguise the client, solve challenges or import browser cookies. It now embeds a pinned Playwright/Chromium runtime behind a replaceable infrastructure boundary; M7/MyTree later consumes this capability rather than implementing it separately.
+Therefore the normal standalone SZA unit/catalog flow uses the Playwright/Chromium page capability when configured. The provider still recognizes explicit challenge-page/body/cookie signatures where Native HTTP is used. The presence of `x-iinfo` alone is **not** enough to classify a response as blocked: successful browser viewer and JPEG responses may contain that header too.
+
+Headless Chromium can load the public `/skan/...` viewer and fetch the real JPEG subresource from `photos.szukajwarchiwach.gov.pl`. The standalone package does **not** try to disguise the client, solve challenges or import browser cookies. It embeds a pinned Playwright/Chromium runtime behind a replaceable infrastructure boundary; M7/MyTree later consumes this capability rather than implementing it separately.
 
 Network behavior is otherwise deliberately bounded:
 
 - requests are sequential,
 - pagination has a hard maximum,
 - optional request pacing is applied between catalog pages and between viewer/asset requests,
-- transport failures plus HTTP `429` / `5xx` responses use bounded retry/backoff,
-- the same retry policy is reused by catalog, viewer and asset retrieval,
+- transport failures plus HTTP `429` / `5xx` responses use bounded retry/backoff where the HTTP path is used,
 - successful validated catalogs are cached in-memory for the same resource URL,
 - malformed, incomplete or cardinality-mismatched responses fail explicitly and are never cached as successful discovery,
 - absence of the historical `Skany (N)` label is not by itself an error when ordered scan entries and official pagination can be enumerated safely,
 - presentation metadata such as the unit title is preserved when recognizable but is not required to resolve an otherwise deterministic unit/object/ordinal catalog,
-- unexpected viewer structure, HTML at the raw-image step and non-image download responses fail explicitly.
+- unexpected viewer structure and non-image final download responses fail explicitly.
 
 Normal automated tests never access the live service.
 
@@ -248,7 +255,7 @@ current unit URL
   → v1 serialized outputs + provenance
 ```
 
-They also verify official `/skan/-/skan/<opaque-token>` viewer resolution plus the explicit standalone browser-transport-required download outcome, count-less `_Jednostka_cur` pagination, that a substantial successful viewer response carrying `x-iinfo` is not by itself classified as a soft block, that the default standalone registry still routes Genealodzy Skanoteka correctly, and that legacy `szukajwarchiwach.pl` URLs are not claimed. The `providers` CLI listing is tested without network access.
+They also verify official `/skan/-/skan/<opaque-token>` viewer resolution, browser-session image capture, count-less `_Jednostka_cur` pagination, misleading `_Jednostka_delta` behavior, that a substantial successful viewer response carrying `x-iinfo` is not by itself classified as a soft block, that the default standalone registry still routes Genealodzy Skanoteka correctly, and that legacy `szukajwarchiwach.pl` URLs are not claimed. The `providers` CLI listing is tested without network access.
 
 ## Deferred work / non-goals
 
