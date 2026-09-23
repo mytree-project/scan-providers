@@ -28,6 +28,7 @@ jobs:
     - name: Validate browser worker syntax
       run: |
         node --check runtime/szukajwarchiwach-browser.mjs
+        node --check runtime/szukajwarchiwach-scan-image.mjs
         node -e "import('playwright').then(() => process.stdout.write('playwright runtime ok\n'))"
 
     - name: Validate composer.json
