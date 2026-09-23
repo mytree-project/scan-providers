@@ -14,9 +14,13 @@ final readonly class PlaywrightBrowserSessionClient implements BrowserSessionCli
         private string $nodeBinary = 'node',
         private ?string $workerPath = null,
         private int $timeoutSeconds = 60,
+        private ?string $debugDirectory = null,
     ) {
         if ($this->timeoutSeconds < 1) {
             throw new \InvalidArgumentException('Browser session timeout must be positive.');
+        }
+        if ($this->debugDirectory !== null && trim($this->debugDirectory) === '') {
+            throw new \InvalidArgumentException('Browser debug directory cannot be empty.');
         }
     }
 
@@ -44,6 +48,10 @@ final readonly class PlaywrightBrowserSessionClient implements BrowserSessionCli
             $url,
             '--timeout-ms=' . ($this->timeoutSeconds * 1000),
         ];
+        if ($this->debugDirectory !== null) {
+            $command[] = '--debug-dir=' . $this->debugDirectory;
+        }
+
         $descriptors = [
             0 => ['pipe', 'r'],
             1 => ['pipe', 'w'],
@@ -70,6 +78,10 @@ final readonly class PlaywrightBrowserSessionClient implements BrowserSessionCli
                 'Szukaj w Archiwach browser worker failed'
                 . ($detail !== '' ? ': ' . $detail : '.'),
             );
+        }
+
+        if ($this->debugDirectory !== null && trim($stderr) !== '') {
+            fwrite(STDERR, rtrim($stderr) . PHP_EOL);
         }
 
         try {
