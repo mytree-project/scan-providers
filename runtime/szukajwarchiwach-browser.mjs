@@ -542,7 +542,7 @@ async function activatePrimaryPhoto(page) {
         clickable.click();
 
         return true;
-    }, photoHost).catch(() => false);
+    }, PHOTO_HOST).catch(() => false);
 }
 
 async function capturePhotoCandidate(response, candidates) {
