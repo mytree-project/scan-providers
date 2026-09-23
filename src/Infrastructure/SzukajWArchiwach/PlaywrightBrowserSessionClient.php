@@ -36,7 +36,7 @@ final readonly class PlaywrightBrowserSessionClient implements BrowserSessionCli
 
     private function run(string $action, string $url): HttpResponse
     {
-        $worker = $this->workerPath ?? dirname(__DIR__, 3) . '/runtime/szukajwarchiwach-browser.mjs';
+        $worker = $this->workerPath ?? $this->defaultWorkerFor($action);
         if (!is_file($worker)) {
             throw new ScanProviderException('Szukaj w Archiwach browser worker is missing: ' . $worker);
         }
@@ -141,5 +141,15 @@ final readonly class PlaywrightBrowserSessionClient implements BrowserSessionCli
             body: $body,
             url: $responseUrl,
         );
+    }
+
+    private function defaultWorkerFor(string $action): string
+    {
+        $runtime = dirname(__DIR__, 3) . '/runtime/';
+
+        return $runtime . match ($action) {
+            'scan-image' => 'szukajwarchiwach-scan-image.mjs',
+            default => 'szukajwarchiwach-browser.mjs',
+        };
     }
 }
