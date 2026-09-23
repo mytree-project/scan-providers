@@ -1,6 +1,8 @@
 # Szukaj w Archiwach browser diagnostics
 
-Use the browser diagnostic mode when live Szukaj w Archiwach HTML or pagination differs from the standalone HTTP view.
+Use the browser diagnostic mode when live Szukaj w Archiwach HTML, pagination, viewer behavior or image selection needs inspection.
+
+The standalone CLI already uses Chromium for current Szukaj w Archiwach unit/catalog page retrieval because live validation showed that a successful-looking Native HTTP response can expose only a partial catalog. `--browser-debug-dir` does not switch catalog transport anymore; it records the browser work that the normal standalone SZA flow already performs.
 
 ```bash
 php bin/mytree-scan download \
@@ -12,7 +14,6 @@ php bin/mytree-scan download \
 
 When `--browser-debug-dir` is present:
 
-- Szukaj w Archiwach catalog/page retrieval is forced through Chromium for that command instead of accepting a successful-looking Native HTTP page.
 - Every Playwright worker invocation records a `1280x720` WebM video in the selected directory.
 - Every worker invocation writes a JSON manifest with navigation, response and scan-candidate events.
 - The worker prints the exact manifest/video paths to stderr.
@@ -37,5 +38,24 @@ Useful event fields include:
 - image candidate URLs, MIME types and body sizes,
 - selected scan image candidate,
 - browser block/error information.
+
+## Live pagination finding from unit 11959850
+
+The 2026-09-23 diagnostic run showed that Chromium rendered the complete catalog as:
+
+```text
+page 1: 20 entries
+page 2: 20 entries
+page 3: 20 entries
+page 4: 20 entries
+page 5: 20 entries
+page 6: 20 entries
+page 7: 20 entries
+page 8: 14 entries
+-----------------
+total: 154 entries
+```
+
+This confirmed that the pagination algorithm can enumerate the complete catalog from browser-rendered HTML and that earlier live results of 60/40 entries came from trusting incomplete successful-looking Native HTTP page content, not from an expected cardinality hard-coded into the provider.
 
 Do not commit generated recordings/manifests. They are runtime diagnostics only.
