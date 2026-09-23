@@ -55,7 +55,7 @@ Live compatibility testing established three transport facts:
 
 The public `/skan/-/skan/<token>` URL is therefore modeled as an HTML viewer locator, not as the raw image asset. `resolve` can identify that viewer deterministically without catalog discovery. The standalone runtime includes Playwright/Chromium infrastructure while browser-specific types remain outside the public/domain contracts.
 
-For current Szukaj w Archiwach unit/catalog discovery, the standalone CLI uses browser-rendered pages when its normal browser capability is configured. This is deliberate rather than a debug-only fallback: the 2026-09-23 live diagnostic run for unit `11959850` rendered seven 20-entry pages plus a final 14-entry page, totaling the 154 scans visible in the portal UI, while earlier Native HTTP runs had produced partial 60/40-entry catalogs.
+For current Szukaj w Archiwach unit/catalog discovery, the standalone CLI uses browser-rendered pages when its normal browser capability is configured. This is deliberate rather than a debug-only fallback: the 2026-09-23 live diagnostic run for unit `11959850` rendered seven 20-entry pages plus a final 14-entry page, totaling the 154 scans visible in the portal UI, while earlier Native HTTP runs had produced partial 60/40-entry catalogs. The active browser page worker now asks the portal for its `delta=200` catalog view first, so units with up to 200 scans can normally be enumerated in one browser render when the portal honors that setting; ordinary pagination remains available when it does not.
 
 The adapter does not use undocumented `/o/pliki-api/...` endpoints as its public contract. For unit discovery it preserves the numeric unit ID, ordered scan ordinals, provider object/file locators and unit metadata/provenance. When `Skany (N)` / `Scans (N)` is present it is verified against complete enumeration; when current HTML omits that label, the adapter follows the official `_Jednostka_cur` pagination and records the enumerated cardinality explicitly. Zero-scan and paginated units are supported without silently treating unrecognized markup as an empty catalog. Legacy `szukajwarchiwach.pl` URLs are retained as external provenance/locator values and are not mechanically rewritten into current service URLs.
 
@@ -203,7 +203,7 @@ php bin/mytree-scan download \
 
 For the current live service, the standalone composition uses Playwright/Chromium for Szukaj w Archiwach page acquisition where browser-visible state is required, including unit/catalog discovery. HTML scan viewers resolve the actual JPEG response loaded from `photos.szukajwarchiwach.gov.pl`. MyTree/M7 will integrate this package capability rather than implement it separately.
 
-Optional `--browser-debug-dir=<path>` records the browser work to WebM videos and JSON manifests without changing the selected SZA page transport. See [docs/SZUKAJWARCHIWACH_BROWSER_DEBUG.md](docs/SZUKAJWARCHIWACH_BROWSER_DEBUG.md).
+Optional `--browser-debug-dir=<path>` writes JSON browser diagnostic manifests without changing the selected SZA page transport. Active workers do not record WebM/video. See [docs/SZUKAJWARCHIWACH_BROWSER_DEBUG.md](docs/SZUKAJWARCHIWACH_BROWSER_DEBUG.md).
 
 ## Public architecture
 
