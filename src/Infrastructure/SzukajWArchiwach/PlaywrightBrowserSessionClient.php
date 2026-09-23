@@ -148,8 +148,9 @@ final readonly class PlaywrightBrowserSessionClient implements BrowserSessionCli
         $runtime = dirname(__DIR__, 3) . '/runtime/';
 
         return $runtime . match ($action) {
+            'page' => 'szukajwarchiwach-page.mjs',
             'scan-image' => 'szukajwarchiwach-scan-image.mjs',
-            default => 'szukajwarchiwach-browser.mjs',
+            default => throw new \InvalidArgumentException('Unsupported Szukaj w Archiwach browser action.'),
         };
     }
 }
