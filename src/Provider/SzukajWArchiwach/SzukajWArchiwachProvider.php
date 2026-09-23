@@ -544,7 +544,7 @@ final class SzukajWArchiwachProvider implements ScanProviderInterface, ScanCatal
             'skan_-id-pliku=' => str_contains($body, 'skan_-id-pliku='),
             'data-plikid=' => str_contains($body, 'data-plikid='),
             '_Jednostka_cur=' => str_contains($body, '_Jednostka_cur='),
-            'Wpisy' => str_contains($this->plainText($body), 'Wpisy'),
+            'Wpisy=' => str_contains($this->plainText($body), 'Wpisy'),
         ];
         $markerText = implode(', ', array_map(
             static fn (string $marker, bool $present): string => $marker . ($present ? 'yes' : 'no'),
