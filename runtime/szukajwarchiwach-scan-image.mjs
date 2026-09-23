@@ -36,22 +36,13 @@ async function main() {
 
     let browser = null;
     let context = null;
-    let page = null;
-    let video = null;
     let failure = null;
     let result = null;
 
     try {
         browser = await chromium.launch({ headless: true });
-        context = await browser.newContext(debugDir === null ? {} : {
-            viewport: { width: 1280, height: 720 },
-            recordVideo: {
-                dir: debugDir,
-                size: { width: 1280, height: 720 },
-            },
-        });
-        page = await context.newPage();
-        video = page.video();
+        context = await browser.newContext({ viewport: { width: 1280, height: 720 } });
+        const page = await context.newPage();
         observeDebugPage(page);
         context.on('page', observeDebugPage);
 
@@ -60,7 +51,7 @@ async function main() {
             waitUntil: 'domcontentloaded',
             timeout: timeoutMs,
         });
-        await page.waitForTimeout(1000);
+        await page.waitForTimeout(500);
         debugEvent('bootstrap:done', {
             status: bootstrapResponse?.status() ?? null,
             url: page.url(),
@@ -73,33 +64,16 @@ async function main() {
         debugState.error = error instanceof Error ? error.message : String(error);
     } finally {
         if (context !== null) {
-            await context.close().catch((error) => {
-                debugEvent('context:close-error', { message: String(error) });
-            });
+            await context.close().catch(() => null);
         }
-
-        if (debugDir !== null && video !== null) {
-            const videoPath = path.join(debugDir, `${runId}.webm`);
-            try {
-                await video.saveAs(videoPath);
-                debugState.video = videoPath;
-            } catch (error) {
-                debugState.video_error = String(error);
-            }
-        }
-
         if (browser !== null) {
             await browser.close().catch(() => null);
         }
-
         if (debugDir !== null) {
             debugState.finished_at = new Date().toISOString();
             const manifestPath = path.join(debugDir, `${runId}.json`);
             await writeFile(manifestPath, JSON.stringify(debugState, null, 2), 'utf8').catch(() => null);
             process.stderr.write(`Browser debug manifest: ${manifestPath}\n`);
-            if (typeof debugState.video === 'string') {
-                process.stderr.write(`Browser debug video: ${debugState.video}\n`);
-            }
         }
     }
 
@@ -133,8 +107,7 @@ async function fetchScanImage(context, page) {
         fail('Scan viewer navigation did not produce an HTTP response.');
     }
 
-    await page.waitForLoadState('networkidle', { timeout: Math.min(timeoutMs, 15000) }).catch(() => null);
-    await page.waitForTimeout(2500);
+    await settlePage(page);
     await Promise.allSettled(pending);
 
     const title = await page.title().catch(() => '');
@@ -147,6 +120,7 @@ async function fetchScanImage(context, page) {
         status: viewerResponse.status(),
         url: page.url(),
         title,
+        scan_entry_count: await page.locator('[data-plikid]').count().catch(() => 0),
         candidates: summarizeCandidates(candidates),
     });
 
@@ -166,9 +140,7 @@ async function fetchScanImage(context, page) {
 
     const targetIdentity = photoIdentity(binding.preview_url);
     if (targetIdentity === null) {
-        fail(
-            `Resolved object ${objectId} is bound to an unsupported preview URL ${binding.preview_url}.`,
-        );
+        fail(`Resolved object ${objectId} is bound to an unsupported preview URL ${binding.preview_url}.`);
     }
 
     debugEvent('scan:object-identity', {
@@ -177,30 +149,39 @@ async function fetchScanImage(context, page) {
         identity: targetIdentity,
     });
 
-    if (binding.public_viewer_url !== null) {
+    if (binding.explicit_photo_url !== null) {
+        await captureExplicitBoundAsset(context, binding.explicit_photo_url, targetIdentity, candidates);
+    }
+
+    if (binding.public_viewer_url !== null && isPublicViewerUrl(binding.public_viewer_url)) {
         debugEvent('scan:object-public-viewer', { url: binding.public_viewer_url });
         await page.goto(binding.public_viewer_url, {
             waitUntil: 'domcontentloaded',
             timeout: timeoutMs,
         });
+        await settlePage(page);
+    } else {
+        await waitForContext(context);
     }
 
-    await waitForContext(context);
     await Promise.allSettled(pending);
 
-    const publicViewerAfterActivation = await discoverNewPublicViewer(context);
-    if (publicViewerAfterActivation !== null && page.url() !== publicViewerAfterActivation) {
-        debugEvent('scan:object-public-viewer-after-activation', { url: publicViewerAfterActivation });
-        await page.goto(publicViewerAfterActivation, {
+    const navigatedViewer = context.pages()
+        .map((observedPage) => observedPage.url())
+        .find((url) => isPublicViewerUrl(url)) ?? null;
+    if (navigatedViewer !== null && page.url() !== navigatedViewer) {
+        debugEvent('scan:object-public-viewer-after-activation', { url: navigatedViewer });
+        await page.goto(navigatedViewer, {
             waitUntil: 'domcontentloaded',
             timeout: timeoutMs,
         });
-        await waitForContext(context);
+        await settlePage(page);
         await Promise.allSettled(pending);
     }
 
-    const targetCandidates = candidates.filter((candidate) => photoIdentity(candidate.url) === targetIdentity);
-    targetCandidates.sort(compareImageCandidates);
+    const targetCandidates = candidates
+        .filter((candidate) => photoIdentity(candidate.url) === targetIdentity)
+        .sort(compareImageCandidates);
 
     debugEvent('scan:object-target-candidates', {
         object_id: objectId,
@@ -209,9 +190,7 @@ async function fetchScanImage(context, page) {
     });
 
     if (targetCandidates.length === 0) {
-        fail(
-            `Object viewer did not load any image response belonging to resolved object ${objectId}.`,
-        );
+        fail(`Object viewer did not load any image response belonging to resolved object ${objectId}.`);
     }
 
     const selected = targetCandidates[0];
@@ -233,91 +212,184 @@ async function fetchScanImage(context, page) {
 async function bindAndActivateObject(page, objectId) {
     return await page.evaluate(({ objectId, photoHost }) => {
         const objectPath = `/obiekty/${objectId}`;
-        const roots = [];
+        const markers = [];
 
         for (const selector of [
             `[data-plikid="${objectId}"]`,
             `[data-object-id="${objectId}"]`,
             `[data-id="${objectId}"]`,
         ]) {
-            roots.push(...document.querySelectorAll(selector));
+            markers.push(...document.querySelectorAll(selector));
         }
 
         for (const anchor of document.querySelectorAll('a[href]')) {
             try {
                 const url = new URL(anchor.href, document.baseURI);
                 if (url.pathname.endsWith(objectPath)) {
-                    roots.push(anchor);
+                    markers.push(anchor);
                 }
             } catch {
                 // Ignore malformed href values.
             }
         }
 
-        const uniqueRoots = [...new Set(roots)];
-        const matches = [];
+        const uniqueMarkers = [...new Set(markers)];
+        const diagnostics = uniqueMarkers.map((marker) => ({
+            tag: marker.tagName,
+            id: marker.id || null,
+            class: marker.className || null,
+            data_plikid: marker.getAttribute?.('data-plikid') ?? null,
+            href: marker.href ?? null,
+        }));
+        const bindings = [];
 
-        for (const root of uniqueRoots) {
-            const images = root.matches?.('img') ? [root] : [...root.querySelectorAll('img')];
-            for (const image of images) {
-                const raw = image.currentSrc || image.src || '';
-                if (raw === '') {
+        for (const marker of uniqueMarkers) {
+            let container = marker;
+            for (let depth = 0; container !== null && depth <= 8; depth += 1, container = container.parentElement) {
+                const images = [];
+                if (container.matches?.('img')) {
+                    images.push(container);
+                }
+                images.push(...container.querySelectorAll('img'));
+
+                const photoImages = [];
+                const seenImages = new Set();
+                for (const image of images) {
+                    const raw = image.currentSrc || image.src || '';
+                    if (raw === '') {
+                        continue;
+                    }
+                    try {
+                        const url = new URL(raw, document.baseURI);
+                        if (url.protocol !== 'https:' || url.hostname !== photoHost) {
+                            continue;
+                        }
+                        if (!seenImages.has(url.toString())) {
+                            seenImages.add(url.toString());
+                            photoImages.push({ image, url: url.toString() });
+                        }
+                    } catch {
+                        // Ignore malformed image URLs.
+                    }
+                }
+
+                if (photoImages.length !== 1) {
                     continue;
                 }
 
-                try {
-                    const url = new URL(raw, document.baseURI);
-                    if (url.protocol !== 'https:' || url.hostname !== photoHost) {
-                        continue;
-                    }
-
-                    const publicViewer = [...root.querySelectorAll('a[href]')]
-                        .map((anchor) => anchor.href)
-                        .find((href) => href.includes('/skan/-/skan/')) ?? null;
-
-                    matches.push({ root, image, previewUrl: url.toString(), publicViewer });
-                } catch {
-                    // Ignore malformed image URLs.
+                const anchors = [...container.querySelectorAll('a[href]')];
+                if (container.matches?.('a[href]')) {
+                    anchors.unshift(container);
                 }
+
+                const publicViewer = anchors
+                    .map((anchor) => anchor.href)
+                    .find((href) => href.includes('/skan/-/skan/')) ?? null;
+                const photoLinks = anchors
+                    .map((anchor) => anchor.href)
+                    .filter((href) => {
+                        try {
+                            const url = new URL(href, document.baseURI);
+                            return url.protocol === 'https:' && url.hostname === photoHost;
+                        } catch {
+                            return false;
+                        }
+                    });
+
+                bindings.push({
+                    marker,
+                    container,
+                    image: photoImages[0].image,
+                    previewUrl: photoImages[0].url,
+                    publicViewer,
+                    photoLinks,
+                    depth,
+                });
+                break;
             }
         }
 
-        const distinct = [];
-        const seen = new Set();
-        for (const match of matches) {
-            const key = match.previewUrl;
-            if (!seen.has(key)) {
-                seen.add(key);
-                distinct.push(match);
+        const bestDepth = bindings.length === 0
+            ? null
+            : Math.min(...bindings.map((binding) => binding.depth));
+        const bestBindings = bindings.filter((binding) => binding.depth === bestDepth);
+        const distinctByPreview = new Map();
+        for (const binding of bestBindings) {
+            if (!distinctByPreview.has(binding.previewUrl)) {
+                distinctByPreview.set(binding.previewUrl, binding);
             }
         }
 
-        if (distinct.length !== 1) {
+        const compactBindings = [...distinctByPreview.values()];
+        if (compactBindings.length !== 1) {
             return {
                 bound: false,
                 object_id: objectId,
                 preview_url: null,
                 public_viewer_url: null,
-                matching_preview_urls: distinct.map((match) => match.previewUrl),
-                root_count: uniqueRoots.length,
+                explicit_photo_url: null,
+                marker_count: uniqueMarkers.length,
+                markers: diagnostics,
+                best_depth: bestDepth,
+                matching_preview_urls: compactBindings.map((binding) => binding.previewUrl),
             };
         }
 
-        const match = distinct[0];
-        const clickable = match.image.closest('button,[role="button"]') ?? match.image;
+        const binding = compactBindings[0];
+        const previewIdentity = identityFromPhotoUrl(binding.previewUrl, photoHost);
+        const explicitPhoto = binding.photoLinks.find((href) => (
+            identityFromPhotoUrl(href, photoHost) === previewIdentity
+        )) ?? null;
+        const clickable = binding.image.closest('a,button,[role="button"]') ?? binding.image;
+
         clickable.scrollIntoView({ block: 'center', inline: 'center' });
         clickable.click();
 
         return {
             bound: true,
             object_id: objectId,
-            preview_url: match.previewUrl,
-            public_viewer_url: match.publicViewer,
-            matching_preview_urls: [match.previewUrl],
-            root_count: uniqueRoots.length,
+            preview_url: binding.previewUrl,
+            public_viewer_url: binding.publicViewer,
+            explicit_photo_url: explicitPhoto,
+            marker_count: uniqueMarkers.length,
+            markers: diagnostics,
+            best_depth: binding.depth,
+            matching_preview_urls: [binding.previewUrl],
             clicked_tag: clickable.tagName,
         };
     }, { objectId, photoHost: PHOTO_HOST });
+}
+
+async function captureExplicitBoundAsset(context, assetUrl, expectedIdentity, candidates) {
+    if (photoIdentity(assetUrl) !== expectedIdentity) {
+        return false;
+    }
+
+    debugEvent('scan:object-explicit-photo', { url: assetUrl });
+    try {
+        const response = await context.request.get(assetUrl, {
+            failOnStatusCode: false,
+            timeout: timeoutMs,
+        });
+        if (response.status() < 200 || response.status() >= 300) {
+            return false;
+        }
+        const headers = normalizeHeaders(response.headers());
+        const contentType = (headers['content-type']?.[0] ?? '').toLowerCase();
+        const body = Buffer.from(await response.body());
+        if (!looksLikeImage(contentType, body)) {
+            return false;
+        }
+        candidates.push({ status: response.status(), url: response.url(), headers, body });
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+async function settlePage(page) {
+    await page.waitForLoadState('networkidle', { timeout: Math.min(timeoutMs, 10000) }).catch(() => null);
+    await page.waitForTimeout(2000).catch(() => null);
 }
 
 async function waitForContext(context) {
@@ -325,35 +397,8 @@ async function waitForContext(context) {
         await observedPage.waitForLoadState('domcontentloaded', {
             timeout: Math.min(timeoutMs, 10000),
         }).catch(() => null);
-        await observedPage.waitForLoadState('networkidle', {
-            timeout: Math.min(timeoutMs, 10000),
-        }).catch(() => null);
-        await observedPage.waitForTimeout(2500).catch(() => null);
+        await settlePage(observedPage);
     }));
-}
-
-async function discoverNewPublicViewer(context) {
-    for (const observedPage of context.pages()) {
-        const current = observedPage.url();
-        if (isPublicViewerUrl(current)) {
-            return current;
-        }
-
-        const candidate = await observedPage.evaluate(() => {
-            for (const anchor of document.querySelectorAll('a[href]')) {
-                if (anchor.href.includes('/skan/-/skan/')) {
-                    return anchor.href;
-                }
-            }
-            return null;
-        }).catch(() => null);
-
-        if (candidate !== null && isPublicViewerUrl(candidate)) {
-            return candidate;
-        }
-    }
-
-    return null;
 }
 
 function selectDirectViewerCandidate(candidates, viewerStatus, viewerUrl) {
@@ -363,7 +408,6 @@ function selectDirectViewerCandidate(candidates, viewerStatus, viewerUrl) {
             + `Viewer status=${viewerStatus} url=${viewerUrl}`,
         );
     }
-
     candidates.sort(compareImageCandidates);
     const selected = candidates[0];
     debugEvent('scan:selected-candidate', { selected: summarizeCandidate(selected) });
@@ -388,19 +432,21 @@ function objectIdFromUrl(url) {
     }
 }
 
-function photoIdentity(url) {
+function identityFromPhotoUrl(url, photoHost) {
     try {
         const parsed = new URL(url);
-        if (parsed.protocol !== 'https:' || parsed.hostname !== PHOTO_HOST) {
+        if (parsed.protocol !== 'https:' || parsed.hostname !== photoHost) {
             return null;
         }
-
         const name = parsed.pathname.split('/').filter(Boolean).at(-1) ?? '';
-        const match = name.match(/^([A-Za-z0-9._~-]+)_(?:max|mid|min|thumb)$/i);
-        return match?.[1] ?? null;
+        return name.match(/^([A-Za-z0-9._~-]+)_(?:max|mid|min|thumb)$/i)?.[1] ?? null;
     } catch {
         return null;
     }
+}
+
+function photoIdentity(url) {
+    return identityFromPhotoUrl(url, PHOTO_HOST);
 }
 
 function isPublicViewerUrl(url) {
@@ -474,12 +520,7 @@ async function capturePhotoCandidate(response, candidates) {
         return;
     }
 
-    candidates.push({
-        status: response.status(),
-        url: response.url(),
-        headers,
-        body,
-    });
+    candidates.push({ status: response.status(), url: response.url(), headers, body });
 }
 
 function observeDebugPage(page) {
@@ -513,11 +554,36 @@ function observeDebugPage(page) {
     });
 }
 
+function isBlockPage(title, body) {
+    const text = `${title}\n${body.toString('utf8', 0, Math.min(body.length, 65536))}`.toLowerCase();
+    return text.includes('request unsuccessful')
+        || text.includes('incapsula incident id')
+        || text.includes('<title>forbidden</title>')
+        || text.includes('access denied');
+}
+
+function looksLikeImage(contentType, body) {
+    if (contentType.startsWith('image/')) {
+        return true;
+    }
+    return (body.length >= 3 && body[0] === 0xFF && body[1] === 0xD8 && body[2] === 0xFF)
+        || (body.length >= 8 && body.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])))
+        || (body.length >= 12 && body.subarray(0, 4).toString('ascii') === 'RIFF' && body.subarray(8, 12).toString('ascii') === 'WEBP');
+}
+
+function normalizeHeaders(headers) {
+    const normalized = {};
+    for (const [name, value] of Object.entries(headers)) {
+        normalized[name.toLowerCase()] = Array.isArray(value) ? value : [String(value)];
+    }
+    return normalized;
+}
+
 function summarizeCandidate(candidate) {
     return {
         status: candidate.status,
         url: candidate.url,
-        content_type: candidate.headers['content-type']?.[0] ?? '',
+        content_type: candidate.headers['content-type']?.[0] ?? null,
         body_bytes: candidate.body.length,
     };
 }
@@ -526,57 +592,31 @@ function summarizeCandidates(candidates) {
     return candidates.map(summarizeCandidate);
 }
 
-function looksLikeImage(contentType, body) {
-    return contentType.startsWith('image/')
-        || (body.length >= 3 && body[0] === 0xff && body[1] === 0xd8 && body[2] === 0xff)
-        || (body.length >= 8 && body[0] === 0x89 && body[1] === 0x50 && body[2] === 0x4e && body[3] === 0x47);
-}
-
-function isBlockPage(title, body) {
-    const text = body.subarray(0, Math.min(body.length, 16384)).toString('utf8').toLowerCase();
-    const normalizedTitle = String(title).trim().toLowerCase();
-    return normalizedTitle === '403 forbidden'
-        || text.includes('request unsuccessful. incapsula')
-        || text.includes('incapsula incident id');
-}
-
-function normalizeHeaders(headers) {
-    return Object.fromEntries(
-        Object.entries(headers).map(([name, value]) => [name.toLowerCase(), [String(value)]]),
-    );
-}
-
 function debugEvent(type, details = {}) {
     if (debugDir === null) {
         return;
     }
-    debugState.events.push({
-        at: new Date().toISOString(),
-        type,
-        ...details,
-    });
+    debugState.events.push({ at: new Date().toISOString(), type, ...details });
 }
 
 function validateArguments() {
     if (action !== 'scan-image') {
-        fail('Object-bound worker accepts only scan-image action.');
+        fail('Expected action scan-image.');
     }
-    if (!Number.isFinite(timeoutMs) || timeoutMs < 1000) {
-        fail('Browser timeout must be at least 1000 ms.');
-    }
-
-    let parsedTarget;
+    let parsed;
     try {
-        parsedTarget = new URL(targetUrl);
+        parsed = new URL(targetUrl);
     } catch {
-        fail('Target URL is invalid.');
+        fail('Expected a valid target URL.');
     }
-
     if (
-        parsedTarget.protocol !== 'https:'
-        || !['szukajwarchiwach.gov.pl', 'www.szukajwarchiwach.gov.pl'].includes(parsedTarget.hostname)
+        parsed.protocol !== 'https:'
+        || !['www.szukajwarchiwach.gov.pl', 'szukajwarchiwach.gov.pl'].includes(parsed.hostname)
     ) {
-        fail('Target URL must use the current szukajwarchiwach.gov.pl host family.');
+        fail('Target URL must use https on szukajwarchiwach.gov.pl.');
+    }
+    if (!Number.isInteger(timeoutMs) || timeoutMs < 1000) {
+        fail('Timeout must be at least 1000 ms.');
     }
 }
 
@@ -585,8 +625,8 @@ function fail(message) {
 }
 
 main()
-    .then((payload) => {
-        process.stdout.write(JSON.stringify(payload));
+    .then((result) => {
+        process.stdout.write(`${JSON.stringify(result)}\n`);
     })
     .catch((error) => {
         process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
