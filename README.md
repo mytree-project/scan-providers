@@ -47,12 +47,15 @@ host: www.szukajwarchiwach.gov.pl
 
 The P2 package implementation contains fixture-backed catalog discovery for known current unit URLs, deterministic ordinal resolution from `#scan<N>` deep links or explicit positive `scanNumberRaw` hints, per-object viewer resolution, default registry/CLI exposure, and support for official `/skan/-/skan/<opaque-token>` **viewer locators**.
 
-Live compatibility testing established two distinct transport facts:
+Live compatibility testing established three transport facts:
 
 - current unit/catalog requests from a simple non-browser HTTP client can be intercepted by the portal's Imperva/Incapsula layer,
-- a 2026-09-22 Playwright/Chromium PoC successfully loaded a public `/skan/-/skan/<token>` viewer and observed the real JPEG as a separate subresource from `photos.szukajwarchiwach.gov.pl`.
+- even a successful-looking Native HTTP catalog response can expose only a partial catalog, so HTTP 200 alone is not sufficient evidence of completeness,
+- a Playwright/Chromium browser session can enumerate the browser-visible unit catalog and can load the real JPEG used by a public `/skan/-/skan/<token>` viewer as a separate subresource from `photos.szukajwarchiwach.gov.pl`.
 
-The public `/skan/-/skan/<token>` URL is therefore modeled as an HTML viewer locator, not as the raw image asset. `resolve` can identify that viewer deterministically without catalog discovery. The standalone runtime now includes Playwright/Chromium fallback for current live acquisition; browser-specific types remain outside the public/domain contracts.
+The public `/skan/-/skan/<token>` URL is therefore modeled as an HTML viewer locator, not as the raw image asset. `resolve` can identify that viewer deterministically without catalog discovery. The standalone runtime includes Playwright/Chromium infrastructure while browser-specific types remain outside the public/domain contracts.
+
+For current Szukaj w Archiwach unit/catalog discovery, the standalone CLI uses browser-rendered pages when its normal browser capability is configured. This is deliberate rather than a debug-only fallback: the 2026-09-23 live diagnostic run for unit `11959850` rendered seven 20-entry pages plus a final 14-entry page, totaling the 154 scans visible in the portal UI, while earlier Native HTTP runs had produced partial 60/40-entry catalogs.
 
 The adapter does not use undocumented `/o/pliki-api/...` endpoints as its public contract. For unit discovery it preserves the numeric unit ID, ordered scan ordinals, provider object/file locators and unit metadata/provenance. When `Skany (N)` / `Scans (N)` is present it is verified against complete enumeration; when current HTML omits that label, the adapter follows the official `_Jednostka_cur` pagination and records the enumerated cardinality explicitly. Zero-scan and paginated units are supported without silently treating unrecognized markup as an empty catalog. Legacy `szukajwarchiwach.pl` URLs are retained as external provenance/locator values and are not mechanically rewritten into current service URLs.
 
@@ -78,7 +81,7 @@ npm ci
 npx playwright install chromium
 ```
 
-The Node dependency is pinned in `package-lock.json`. Chromium is launched only when the selected Szukaj w Archiwach operation requires a browser-established session; normal HTTP-only provider operations continue to use `NativeHttpClient`.
+The Node dependency is pinned in `package-lock.json`. Current Szukaj w Archiwach unit/catalog operations use Chromium through the package infrastructure; normal HTTP-only provider operations continue to use `NativeHttpClient`.
 
 ## CLI
 
@@ -198,7 +201,9 @@ php bin/mytree-scan download \
   --output=var/scans
 ```
 
-For the current live service, the standalone `NativeHttpClient` may fail at unit/catalog access or return HTML at the public scan viewer step. The standalone composition now includes a Playwright/Chromium browser-session fallback for Szukaj w Archiwach: protected catalog pages can be fetched through a real browser context, and HTML scan viewers can resolve the actual JPEG response loaded from `photos.szukajwarchiwach.gov.pl`. MyTree/M7 will integrate this package capability rather than implement it separately.
+For the current live service, the standalone composition uses Playwright/Chromium for Szukaj w Archiwach page acquisition where browser-visible state is required, including unit/catalog discovery. HTML scan viewers resolve the actual JPEG response loaded from `photos.szukajwarchiwach.gov.pl`. MyTree/M7 will integrate this package capability rather than implement it separately.
+
+Optional `--browser-debug-dir=<path>` records the browser work to WebM videos and JSON manifests without changing the selected SZA page transport. See [docs/SZUKAJWARCHIWACH_BROWSER_DEBUG.md](docs/SZUKAJWARCHIWACH_BROWSER_DEBUG.md).
 
 ## Public architecture
 
@@ -244,16 +249,16 @@ The Szukaj w Archiwach P2 integration does not require a schema-version change. 
 composer test
 ```
 
-Normal tests use local fixtures and fake HTTP responses. CI does not depend on the availability or current HTML of third-party genealogy portals. Package-level integration coverage includes registry routing and the complete Szukaj w Archiwach discover → resolve → download → serialization flow.
+Normal tests use local fixtures and fake HTTP/browser responses. CI does not depend on the availability or current HTML of third-party genealogy portals. Package-level integration coverage includes registry routing and the complete Szukaj w Archiwach discover → resolve → download → serialization flow.
 
 ## Current limitations
 
-- Live Szukaj w Archiwach unit/catalog requests may be soft-blocked by the service's current Imperva/Incapsula layer. The standalone HTTP client detects explicit challenge signatures and does not attempt to bypass them; `x-iinfo` alone is not considered proof of a block because successful viewer/image responses may also contain it.
+- Current Szukaj w Archiwach unit/catalog retrieval depends on the bundled Playwright/Chromium runtime because successful-looking Native HTTP responses have been observed to expose incomplete catalogs.
 - Szukaj w Archiwach `/skan/-/skan/<token>` is an HTML viewer locator in the observed live flow, not a raw JPEG URL. Direct-viewer live download is confirmed. Known-unit + ordinal live download is also transport-functional; final P2 validation requires confirming that the browser flow selects the original/full-resolution asset rather than stopping at an object-viewer preview such as `_mid`.
 - Szukaj w Archiwach starts from a known current numeric-unit URL; arbitrary archival-signature-to-unit search is not implemented.
 - Legacy `szukajwarchiwach.pl` URLs are not mechanically migrated by the scan provider.
 - Szukaj w Archiwach uses per-object acquisition; optimized whole-unit/batch download is intentionally deferred.
 - Genealodzy Skanoteka act resolution supports positive numeric act numbers and strict exact/range filename conventions only.
 - The package starts from a known scan-resource/catalog URL. Discovering the correct remote collection solely from parish/year/type is intentionally outside the initial API and can be introduced later as a segregated capability.
-- Provider HTML changes may require parser updates; provenance hashes and fixture tests make such changes diagnosable.
+- Provider HTML changes may require parser updates; provenance hashes, browser diagnostics and fixture tests make such changes diagnosable.
 - Laravel/MyTree application registration is intentionally not part of P2; that integration belongs to M7. Browser transport required by a provider is still part of standalone provider/tool operation and is not deferred to Laravel.
