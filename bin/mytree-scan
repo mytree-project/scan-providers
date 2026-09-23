@@ -52,7 +52,7 @@ Common:
   --timeout=60
   --node=node
   --browser-worker=<path>
-  --browser-debug-dir=<path>  Record Playwright sessions and force Szukaj w Archiwach catalog pages through the browser.
+  --browser-debug-dir=<path>  Record Playwright sessions and diagnostic manifests.
   --help
 TXT;
     fwrite($exit === 0 ? STDOUT : STDERR, $text . PHP_EOL);
@@ -120,7 +120,7 @@ if ($browserDebugEnabled) {
     fwrite(
         STDERR,
         "Szukaj w Archiwach browser diagnostics enabled: {$browserDebugDir}\n"
-        . "Catalog page retrieval will be forced through Chromium for this command.\n",
+        . "Browser sessions and manifests will be recorded for this command.\n",
     );
 }
 
@@ -133,7 +133,7 @@ $browserSession = new PlaywrightBrowserSessionClient(
 $registry = DefaultScanProviderRegistryFactory::create(
     http: $http,
     szukajWArchiwachBrowserSession: $browserSession,
-    preferSzukajWArchiwachBrowserPages: $browserDebugEnabled,
+    preferSzukajWArchiwachBrowserPages: true,
 );
 
 try {
