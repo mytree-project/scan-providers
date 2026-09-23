@@ -25,7 +25,7 @@ A single CLI command may create several recordings because the current runtime d
 The JSON manifest uses schema:
 
 ```text
-mytree.szukajwarchiwum-browser-debug.v1
+mytree.szukajwarchiwach-browser-debug.v1
 ```
 
 Useful event fields include:
