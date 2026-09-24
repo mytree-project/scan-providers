@@ -11,4 +11,10 @@ interface BrowserSessionClientInterface
     public function fetchPage(string $url): HttpResponse;
 
     public function fetchScanImage(string $viewerUrl): HttpResponse;
+
+    public function fetchUnitScanImage(
+        string $unitUrl,
+        int $scanOrdinal,
+        string $expectedObjectId,
+    ): HttpResponse;
 }
