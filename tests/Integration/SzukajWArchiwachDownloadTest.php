@@ -93,7 +93,7 @@ final class SzukajWArchiwachDownloadTest extends TestCase
         self::assertSame([self::UNIT_URL, self::VIEWER_URL], $http->requests);
     }
 
-    public function testItCapturesImageDirectlyFromBrowserObjectViewerWhenNoPublicScanLinkIsExposed(): void
+    public function testItUsesBrowserUnitGalleryFlowForResolvedOrdinal(): void
     {
         $http = new FakeHttpClient();
         $browser = new FakeBrowserSessionClient();
@@ -104,7 +104,12 @@ final class SzukajWArchiwachDownloadTest extends TestCase
             $this->fixture('multi-scan.html'),
             self::UNIT_URL,
         ));
-        $browser->respondScanImage(self::VIEWER_URL, $this->imageResponse());
+        $browser->respondUnitScanImage(
+            self::UNIT_URL,
+            2,
+            '700002',
+            $this->imageResponse(),
+        );
 
         $provider = $this->provider($http, browserSessionClient: $browser);
         $resolution = $provider->resolve(new ResolveScanRequest(new ScanResourceReference(self::RESOURCE_URL)));
@@ -118,7 +123,7 @@ final class SzukajWArchiwachDownloadTest extends TestCase
         self::assertSame(self::VIEWER_URL, $result->viewerUrl);
         self::assertSame(self::PHOTO_ASSET_URL, $result->downloadUrl);
         self::assertSame([
-            'scan-image:' . self::VIEWER_URL,
+            'unit-scan-image:' . self::UNIT_URL . '#scan2:object-700002',
         ], $browser->requests);
         self::assertSame([
             self::UNIT_URL,
