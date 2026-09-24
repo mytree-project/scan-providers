@@ -16,6 +16,9 @@ final class FakeBrowserSessionClient implements BrowserSessionClientInterface
     /** @var array<string,HttpResponse> */
     private array $scanImages = [];
 
+    /** @var array<string,HttpResponse> */
+    private array $unitScanImages = [];
+
     /** @var list<string> */
     public array $requests = [];
 
@@ -27,6 +30,15 @@ final class FakeBrowserSessionClient implements BrowserSessionClientInterface
     public function respondScanImage(string $viewerUrl, HttpResponse $response): void
     {
         $this->scanImages[$viewerUrl] = $response;
+    }
+
+    public function respondUnitScanImage(
+        string $unitUrl,
+        int $scanOrdinal,
+        string $expectedObjectId,
+        HttpResponse $response,
+    ): void {
+        $this->unitScanImages[$this->unitScanKey($unitUrl, $scanOrdinal, $expectedObjectId)] = $response;
     }
 
     public function fetchPage(string $url): HttpResponse
@@ -42,5 +54,22 @@ final class FakeBrowserSessionClient implements BrowserSessionClientInterface
 
         return $this->scanImages[$viewerUrl]
             ?? throw new RuntimeException('No fake browser image response for ' . $viewerUrl);
+    }
+
+    public function fetchUnitScanImage(
+        string $unitUrl,
+        int $scanOrdinal,
+        string $expectedObjectId,
+    ): HttpResponse {
+        $key = $this->unitScanKey($unitUrl, $scanOrdinal, $expectedObjectId);
+        $this->requests[] = 'unit-scan-image:' . $key;
+
+        return $this->unitScanImages[$key]
+            ?? throw new RuntimeException('No fake browser unit scan response for ' . $key);
+    }
+
+    private function unitScanKey(string $unitUrl, int $scanOrdinal, string $expectedObjectId): string
+    {
+        return $unitUrl . '#scan' . $scanOrdinal . ':object-' . $expectedObjectId;
     }
 }
