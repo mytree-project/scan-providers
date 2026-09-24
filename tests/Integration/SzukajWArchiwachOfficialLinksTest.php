@@ -17,6 +17,7 @@ use MyTree\ScanProviders\Domain\ScanResourceReference;
 use MyTree\ScanProviders\Exception\ScanCapabilityUnavailableException;
 use MyTree\ScanProviders\Provider\SzukajWArchiwach\SzukajWArchiwachProvider;
 use MyTree\ScanProviders\Registry\ScanProviderRegistry;
+use MyTree\ScanProviders\Tests\Support\FakeBrowserSessionClient;
 use MyTree\ScanProviders\Tests\Support\FakeHttpClient;
 use MyTree\ScanProviders\Tests\Support\FixedClock;
 use MyTree\ScanProviders\Tests\Support\InMemoryScanAssetStorage;
@@ -78,6 +79,85 @@ final class SzukajWArchiwachOfficialLinksTest extends TestCase
         }
 
         self::assertSame([self::PUBLIC_SCAN_VIEWER_URL], $http->requests);
+    }
+
+    public function testItUsesBrowserSessionToDownloadImageFromPublicScanViewer(): void
+    {
+        $http = new FakeHttpClient();
+        $browser = new FakeBrowserSessionClient();
+        $provider = $this->provider($http, $browser);
+        $registry = new ScanProviderRegistry([$provider]);
+        $resource = new ScanResourceReference(self::PUBLIC_SCAN_VIEWER_URL);
+
+        $resolution = (new ResolveScan($registry))->execute(new ResolveScanRequest($resource));
+        self::assertNotNull($resolution->resolved);
+
+        $viewerHtml = '<!doctype html><html><head><title>Skan - Szukaj w Archiwach</title></head>'
+            . '<body>viewer</body></html>';
+        $http->respond(self::PUBLIC_SCAN_VIEWER_URL, new HttpResponse(
+            200,
+            ['content-type' => ['text/html;charset=UTF-8']],
+            $viewerHtml,
+            self::PUBLIC_SCAN_VIEWER_URL,
+        ));
+
+        $photoUrl = 'https://photos.szukajwarchiwach.gov.pl/sample_max';
+        $jpeg = "\xFF\xD8\xFF\xE0BROWSER-SZWA";
+        $browser->respondScanImage(self::PUBLIC_SCAN_VIEWER_URL, new HttpResponse(
+            200,
+            ['content-type' => ['image/jpeg']],
+            $jpeg,
+            $photoUrl,
+        ));
+
+        $downloaded = (new DownloadScan(
+            $registry,
+            new InMemoryScanAssetStorage(),
+        ))->execute($resolution->resolved);
+
+        self::assertSame('image/jpeg', $downloaded->mimeType);
+        self::assertSame(self::PUBLIC_SCAN_VIEWER_URL, $downloaded->viewerUrl);
+        self::assertSame($photoUrl, $downloaded->downloadUrl);
+        self::assertSame(hash('sha256', $jpeg), $downloaded->asset->sha256);
+        self::assertSame(['scan-image:' . self::PUBLIC_SCAN_VIEWER_URL], $browser->requests);
+    }
+
+    public function testItFallsBackToBrowserSessionWhenNativeCatalogRequestIsSoftBlocked(): void
+    {
+        $http = new FakeHttpClient();
+        $browser = new FakeBrowserSessionClient();
+        $body = '<html><body>Request unsuccessful. Incapsula incident ID: 123456789</body></html>';
+        $http->respond(self::UNIT_URL, new HttpResponse(
+            200,
+            [
+                'content-type' => ['text/html'],
+                'x-iinfo' => ['14-39368798-0 0NNN'],
+                'set-cookie' => ['incap_ses_878_3269802=redacted; path=/'],
+            ],
+            $body,
+            self::UNIT_URL,
+        ));
+        $browser->respondPage(self::UNIT_URL, new HttpResponse(
+            200,
+            ['content-type' => ['text/html']],
+            '<!doctype html><html><body><h3>Skany (3)</h3>'
+                . '<a data-plikid="700001">Skan 1</a>'
+                . '<a data-plikid="700002">Skan 2</a>'
+                . '<a data-plikid="700003">Skan 3</a>'
+                . '</body></html>',
+            self::UNIT_URL,
+        ));
+
+        $registry = new ScanProviderRegistry([$this->provider($http, $browser)]);
+        $resolution = (new ResolveScan($registry))->execute(new ResolveScanRequest(
+            new ScanResourceReference(self::UNIT_URL),
+            new ScanLocatorHints(scanNumberRaw: '2'),
+        ));
+
+        self::assertSame(ScanResolutionStatus::Resolved, $resolution->status);
+        self::assertNotNull($resolution->resolved);
+        self::assertSame('700002', $resolution->resolved->scan->remoteId);
+        self::assertSame(['page:' . self::UNIT_URL], $browser->requests);
     }
 
     public function testItFallsBackFromUnitShellToOfficialCatalogPaginationUrl(): void
@@ -208,6 +288,110 @@ HTML;
         );
     }
 
+    public function testItContinuesOfficialPaginationWhenAFullPageOmitsTheNextLink(): void
+    {
+        $http = new FakeHttpClient();
+        $pageTwo = self::UNIT_URL
+            . '?_Jednostka_delta=2&_Jednostka_resetCur=false&_Jednostka_cur=2&_Jednostka_id_jednostki=990004';
+        $pageThree = self::UNIT_URL
+            . '?_Jednostka_delta=2&_Jednostka_resetCur=false&_Jednostka_cur=3&_Jednostka_id_jednostki=990004';
+
+        $http->respond(self::UNIT_URL, new HttpResponse(
+            200,
+            ['content-type' => ['text/html']],
+            '<!doctype html><html><body>'
+                . '<a data-plikid="700001">Skan 1</a>'
+                . '<a data-plikid="700002">Skan 2</a>'
+                . '<a href="' . htmlspecialchars($pageTwo, ENT_QUOTES | ENT_HTML5, 'UTF-8') . '">2</a>'
+                . '</body></html>',
+            self::UNIT_URL,
+        ));
+        $http->respond($pageTwo, new HttpResponse(
+            200,
+            ['content-type' => ['text/html']],
+            '<!doctype html><html><body>'
+                . '<a data-plikid="700003">Skan 3</a>'
+                . '<a data-plikid="700004">Skan 4</a>'
+                . '</body></html>',
+            $pageTwo,
+        ));
+        $http->respond($pageThree, new HttpResponse(
+            200,
+            ['content-type' => ['text/html']],
+            '<!doctype html><html><body>'
+                . '<a data-plikid="700005">Skan 5</a>'
+                . '</body></html>',
+            $pageThree,
+        ));
+
+        $registry = new ScanProviderRegistry([$this->provider($http)]);
+        $resolution = (new ResolveScan($registry))->execute(new ResolveScanRequest(
+            new ScanResourceReference(self::UNIT_URL),
+            new ScanLocatorHints(scanNumberRaw: '5'),
+        ));
+
+        self::assertSame(ScanResolutionStatus::Resolved, $resolution->status);
+        self::assertNotNull($resolution->resolved);
+        self::assertSame('700005', $resolution->resolved->scan->remoteId);
+        self::assertSame(5, $resolution->resolved->catalogProvenance->details['scan_count']);
+        self::assertSame(3, $resolution->resolved->catalogProvenance->details['page_count']);
+        self::assertSame([self::UNIT_URL, $pageTwo, $pageThree], $http->requests);
+    }
+
+    public function testItUsesObservedEntryCountInsteadOfDeltaWhenSynthesizingNextPage(): void
+    {
+        $http = new FakeHttpClient();
+        $pageTwo = self::UNIT_URL
+            . '?_Jednostka_delta=200&_Jednostka_resetCur=false&_Jednostka_cur=2&_Jednostka_id_jednostki=990004';
+        $pageThree = self::UNIT_URL
+            . '?_Jednostka_delta=200&_Jednostka_resetCur=false&_Jednostka_cur=3&_Jednostka_id_jednostki=990004';
+
+        $http->respond(self::UNIT_URL, new HttpResponse(
+            200,
+            ['content-type' => ['text/html']],
+            '<!doctype html><html><body>'
+                . '<a data-plikid="700001">Skan 1</a>'
+                . '<a data-plikid="700002">Skan 2</a>'
+                . '<a href="' . htmlspecialchars($pageTwo, ENT_QUOTES | ENT_HTML5, 'UTF-8') . '">2</a>'
+                . '</body></html>',
+            self::UNIT_URL,
+        ));
+        $http->respond($pageTwo, new HttpResponse(
+            200,
+            ['content-type' => ['text/html']],
+            '<!doctype html><html><body>'
+                . '<a data-plikid="700003">Skan 3</a>'
+                . '<a data-plikid="700004">Skan 4</a>'
+                . '</body></html>',
+            $pageTwo,
+        ));
+        $http->respond($pageThree, new HttpResponse(
+            200,
+            ['content-type' => ['text/html']],
+            '<!doctype html><html><body>'
+                . '<a data-plikid="700005">Skan 5</a>'
+                . '</body></html>',
+            $pageThree,
+        ));
+
+        $registry = new ScanProviderRegistry([$this->provider($http)]);
+        $resolution = (new ResolveScan($registry))->execute(new ResolveScanRequest(
+            new ScanResourceReference(self::UNIT_URL),
+            new ScanLocatorHints(scanNumberRaw: '5'),
+        ));
+
+        self::assertSame(ScanResolutionStatus::Resolved, $resolution->status);
+        self::assertNotNull($resolution->resolved);
+        self::assertSame('700005', $resolution->resolved->scan->remoteId);
+        self::assertSame(2, $resolution->resolved->catalogProvenance->details['observed_page_size']);
+        self::assertSame([
+            self::UNIT_URL => 2,
+            $pageTwo => 2,
+            $pageThree => 1,
+        ], $resolution->resolved->catalogProvenance->details['page_entry_count']);
+        self::assertSame([self::UNIT_URL, $pageTwo, $pageThree], $http->requests);
+    }
+
     public function testItEnumeratesOfficialLiferayPaginationWhenDeclaredScanCountIsAbsent(): void
     {
         $http = new FakeHttpClient();
@@ -245,10 +429,13 @@ HTML;
         self::assertSame([self::UNIT_URL, self::PAGE_TWO], $http->requests);
     }
 
-    private function provider(FakeHttpClient $http): SzukajWArchiwachProvider
-    {
+    private function provider(
+        FakeHttpClient $http,
+        ?FakeBrowserSessionClient $browserSessionClient = null,
+    ): SzukajWArchiwachProvider {
         return new SzukajWArchiwachProvider(
             http: $http,
+            browserSessionClient: $browserSessionClient,
             clock: new FixedClock(new DateTimeImmutable('2026-09-18T06:00:00+00:00')),
             retryBackoffMilliseconds: 0,
             requestPacingMilliseconds: 0,

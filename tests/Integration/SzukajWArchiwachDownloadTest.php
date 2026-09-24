@@ -15,6 +15,7 @@ use MyTree\ScanProviders\Exception\ScanCapabilityUnavailableException;
 use MyTree\ScanProviders\Exception\UnexpectedProviderResponseException;
 use MyTree\ScanProviders\Provider\SzukajWArchiwach\SzukajWArchiwachProvider;
 use MyTree\ScanProviders\Registry\ScanProviderRegistry;
+use MyTree\ScanProviders\Tests\Support\FakeBrowserSessionClient;
 use MyTree\ScanProviders\Tests\Support\FakeHttpClient;
 use MyTree\ScanProviders\Tests\Support\FixedClock;
 use MyTree\ScanProviders\Tests\Support\InMemoryScanAssetStorage;
@@ -92,6 +93,43 @@ final class SzukajWArchiwachDownloadTest extends TestCase
         self::assertSame([self::UNIT_URL, self::VIEWER_URL], $http->requests);
     }
 
+    public function testItUsesBrowserUnitGalleryFlowForResolvedOrdinal(): void
+    {
+        $http = new FakeHttpClient();
+        $browser = new FakeBrowserSessionClient();
+
+        $http->respond(self::UNIT_URL, new HttpResponse(
+            200,
+            [],
+            $this->fixture('multi-scan.html'),
+            self::UNIT_URL,
+        ));
+        $browser->respondUnitScanImage(
+            self::UNIT_URL,
+            2,
+            '700002',
+            $this->imageResponse(),
+        );
+
+        $provider = $this->provider($http, browserSessionClient: $browser);
+        $resolution = $provider->resolve(new ResolveScanRequest(new ScanResourceReference(self::RESOURCE_URL)));
+        self::assertNotNull($resolution->resolved);
+
+        $result = (new DownloadScan(
+            new ScanProviderRegistry([$provider]),
+            new InMemoryScanAssetStorage(),
+        ))->execute($resolution->resolved);
+
+        self::assertSame(self::VIEWER_URL, $result->viewerUrl);
+        self::assertSame(self::PHOTO_ASSET_URL, $result->downloadUrl);
+        self::assertSame([
+            'unit-scan-image:' . self::UNIT_URL . '#scan2:object-700002',
+        ], $browser->requests);
+        self::assertSame([
+            self::UNIT_URL,
+        ], $http->requests);
+    }
+
     public function testItRetriesTransientViewerAndAssetFailuresWithoutRealSleeps(): void
     {
         $http = new FakeHttpClient();
@@ -158,10 +196,14 @@ final class SzukajWArchiwachDownloadTest extends TestCase
         );
     }
 
-    private function provider(FakeHttpClient $http, int $maxAttempts = 3): SzukajWArchiwachProvider
-    {
+    private function provider(
+        FakeHttpClient $http,
+        int $maxAttempts = 3,
+        ?FakeBrowserSessionClient $browserSessionClient = null,
+    ): SzukajWArchiwachProvider {
         return new SzukajWArchiwachProvider(
             http: $http,
+            browserSessionClient: $browserSessionClient,
             clock: new FixedClock(new DateTimeImmutable('2026-09-17T12:00:00+00:00')),
             maxAttempts: $maxAttempts,
             retryBackoffMilliseconds: 0,

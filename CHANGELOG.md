@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add Playwright/Chromium browser-session transport for live Szukaj w Archiwach fallback: protected HTML pages can be retrieved through an ephemeral browser context and scan viewers can yield the actual image subresource without exposing browser types in public/domain contracts.
+
 - Add initial `szukajwarchiwach` known-unit catalog discovery with metadata, digital scan cardinality, ordered provider object locators, pagination validation, bounded retry/pacing, in-memory validated-result caching and offline fixtures.
 - Add deterministic Szukaj w Archiwach scan-ordinal resolution from `#scan<N>` or explicit `scanNumberRaw`, with safe unresolved/ambiguous/unsupported outcomes and preserved catalog provenance.
 - Add Szukaj w Archiwach per-object viewer resolution and public `/skan/-/skan/<opaque-token>` viewer-locator handling with MIME validation, explicit browser-transport-required failure when standalone HTTP receives viewer HTML, bounded retries and preserved catalog provenance.

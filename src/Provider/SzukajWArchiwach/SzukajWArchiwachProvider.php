@@ -37,6 +37,8 @@ final class SzukajWArchiwachProvider implements ScanProviderInterface, ScanCatal
 
     public function __construct(
         private readonly HttpClientInterface $http,
+        private readonly ?BrowserSessionClientInterface $browserSessionClient = null,
+        private readonly bool $preferBrowserPages = false,
         private readonly CatalogPageParser $parser = new CatalogPageParser(),
         private readonly OrdinalScanResolver $ordinalResolver = new OrdinalScanResolver(),
         private readonly ClockInterface $clock = new SystemClock(),
@@ -52,14 +54,19 @@ final class SzukajWArchiwachProvider implements ScanProviderInterface, ScanCatal
         if ($this->retryBackoffMilliseconds < 0 || $this->requestPacingMilliseconds < 0) {
             throw new \InvalidArgumentException('Szukaj w Archiwach delays cannot be negative.');
         }
+        if ($this->preferBrowserPages && $this->browserSessionClient === null) {
+            throw new \InvalidArgumentException('Browser page preference requires browser-session transport.');
+        }
 
         $this->fetcher = new RetryingHttpFetcher(
             http: $this->http,
+            browserSessionClient: $this->browserSessionClient,
             maxAttempts: $this->maxAttempts,
             retryBackoffMilliseconds: $this->retryBackoffMilliseconds,
         );
         $this->assetDownloader = $assetDownloader ?? new SzukajWArchiwachAssetDownloader(
             fetcher: $this->fetcher,
+            browserSessionClient: $this->browserSessionClient,
             clock: $this->clock,
             requestPacingMilliseconds: $this->requestPacingMilliseconds,
         );
@@ -106,7 +113,9 @@ final class SzukajWArchiwachProvider implements ScanProviderInterface, ScanCatal
         $rawEntries = [];
         $seenObjectIds = [];
         $pageHashes = [];
+        $pageEntryCounts = [];
         $responseCorpus = '';
+        $observedPageSize = null;
         $firstPage = null;
         $expectedCount = null;
         $pageNumber = 0;
@@ -127,7 +136,7 @@ final class SzukajWArchiwachProvider implements ScanProviderInterface, ScanCatal
             $response = $this->fetchPage($nextPageUrl);
             $lastResponseUrl = $nextPageUrl;
             $lastResponseBody = $response->body;
-            $parsed = $this->parser->parse($response->body, $nextPageUrl);
+            $parsed = $this->parser->parse($response->body, $response->url);
 
             if (
                 $nextPageUrl === $unitUrl
@@ -156,7 +165,12 @@ final class SzukajWArchiwachProvider implements ScanProviderInterface, ScanCatal
 
             $pageHash = hash('sha256', $response->body);
             $pageHashes[$nextPageUrl] = $pageHash;
+            $pageEntryCounts[$nextPageUrl] = count($parsed->scanEntries);
             $responseCorpus .= $nextPageUrl . "\n" . $response->body . "\n";
+
+            if ($parsed->nextPageUrl !== null && count($parsed->scanEntries) > 0) {
+                $observedPageSize = count($parsed->scanEntries);
+            }
 
             foreach ($parsed->scanEntries as $entry) {
                 if (isset($seenObjectIds[$entry['object_id']])) {
@@ -168,7 +182,12 @@ final class SzukajWArchiwachProvider implements ScanProviderInterface, ScanCatal
                 $rawEntries[] = $entry;
             }
 
-            $nextPageUrl = $parsed->nextPageUrl;
+            $nextPageUrl = $parsed->nextPageUrl
+                ?? $this->syntheticNextCatalogPageUrl(
+                    $nextPageUrl,
+                    count($parsed->scanEntries),
+                    $observedPageSize,
+                );
         }
 
         if ($firstPage === null) {
@@ -234,6 +253,8 @@ final class SzukajWArchiwachProvider implements ScanProviderInterface, ScanCatal
                     'scan_count_source' => $expectedCount === null ? 'enumerated_catalog' : 'declared_and_verified',
                     'page_count' => $pageNumber,
                     'page_response_sha256' => $pageHashes,
+                    'page_entry_count' => $pageEntryCounts,
+                    'observed_page_size' => $observedPageSize,
                     'unit_metadata' => $unitMetadata,
                 ],
             ),
@@ -301,7 +322,7 @@ final class SzukajWArchiwachProvider implements ScanProviderInterface, ScanCatal
             remoteId: $token,
             label: 'Szukaj w Archiwach scan viewer',
             remoteFilename: '',
-            viewerUrl: $resource->url,
+            viewerUrl: $this->publicScanViewerUrl($token),
             locators: [new ScanLocator(ScanLocator::OPAQUE, 'public-scan-viewer:' . $token)],
             metadata: [
                 'public_scan_viewer_token' => $token,
@@ -325,6 +346,11 @@ final class SzukajWArchiwachProvider implements ScanProviderInterface, ScanCatal
                 'response_sha256_basis' => 'public_scan_viewer_locator_without_network_fetch',
             ],
         );
+    }
+
+    private function publicScanViewerUrl(string $token): string
+    {
+        return 'https://www.szukajwarchiwach.gov.pl/skan/-/skan/' . rawurlencode($token);
     }
 
     private function publicScanToken(ScanResourceReference $resource): ?string
@@ -352,6 +378,22 @@ final class SzukajWArchiwachProvider implements ScanProviderInterface, ScanCatal
 
     private function fetchPage(string $url): HttpResponse
     {
+        if ($this->preferBrowserPages) {
+            $response = $this->browserSessionClient?->fetchPage($url);
+            if ($response === null) {
+                throw new UnexpectedProviderResponseException('Browser page transport is not configured.');
+            }
+            if ($response->status < 200 || $response->status >= 300) {
+                throw new UnexpectedProviderResponseException(sprintf(
+                    'Szukaj w Archiwach browser session returned HTTP %d for %s.',
+                    $response->status,
+                    $url,
+                ));
+            }
+
+            return $response;
+        }
+
         return $this->fetcher->get($url, [
             'Accept' => 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         ]);
@@ -447,20 +489,82 @@ final class SzukajWArchiwachProvider implements ScanProviderInterface, ScanCatal
         return $metadata;
     }
 
-    private function catalogDiagnostics(?string $url, string $body): string
-    {
-        $markers = [];
-        foreach (['data-plikid', 'skan_-id-pliku', 'load-photo-slider', 'jednostka-skan', 'Wpisy', '_Jednostka_'] as $marker) {
-            $markers[] = $marker . '=' . (str_contains($body, $marker) ? 'yes' : 'no');
+    private function syntheticNextCatalogPageUrl(
+        string $pageUrl,
+        int $entryCount,
+        ?int $observedPageSize,
+    ): ?string {
+        $query = \MyTree\ScanProviders\Support\Url::query($pageUrl);
+        $currentPage = $this->positiveQueryInt($query['_Jednostka_cur'] ?? null);
+        $unitId = $query['_Jednostka_id_jednostki'] ?? null;
+
+        if (
+            $currentPage === null
+            || $observedPageSize === null
+            || $observedPageSize < 1
+            || !is_scalar($unitId)
+            || (string) $unitId === ''
+            || $entryCount < $observedPageSize
+        ) {
+            return null;
         }
 
+        $parts = parse_url($pageUrl);
+        if (!is_array($parts)) {
+            return null;
+        }
+
+        $query['_Jednostka_cur'] = (string) ($currentPage + 1);
+        $scheme = (string) ($parts['scheme'] ?? 'https');
+        $host = (string) ($parts['host'] ?? 'www.szukajwarchiwach.gov.pl');
+        $path = (string) ($parts['path'] ?? '');
+
+        return $scheme . '://' . $host . $path . '?' . http_build_query(
+            $query,
+            '',
+            '&',
+            PHP_QUERY_RFC3986,
+        );
+    }
+
+    private function positiveQueryInt(mixed $value): ?int
+    {
+        if (!is_scalar($value) || preg_match('~^[1-9]\\d*$~', (string) $value) !== 1) {
+            return null;
+        }
+
+        $validated = filter_var((string) $value, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+
+        return is_int($validated) ? $validated : null;
+    }
+
+    private function catalogDiagnostics(?string $url, string $body): string
+    {
+        $markers = [
+            'skan_-id-pliku=' => str_contains($body, 'skan_-id-pliku='),
+            'data-plikid=' => str_contains($body, 'data-plikid='),
+            '_Jednostka_cur=' => str_contains($body, '_Jednostka_cur='),
+            'Wpisy=' => str_contains($this->plainText($body), 'Wpisy'),
+        ];
+        $markerText = implode(', ', array_map(
+            static fn (string $marker, bool $present): string => $marker . ($present ? 'yes' : 'no'),
+            array_keys($markers),
+            array_values($markers),
+        ));
+
         return sprintf(
-            '[url=%s bytes=%d sha256=%s markers:%s]',
+            'Last URL=%s; body_bytes=%d; sha256=%s; markers=[%s].',
             $url ?? 'unknown',
             strlen($body),
             hash('sha256', $body),
-            implode(',', $markers),
+            $markerText,
         );
+    }
+
+    private function plainText(string $html): string
+    {
+        $text = html_entity_decode(strip_tags($html), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        return trim(preg_replace('~\\s+~u', ' ', $text) ?? $text);
     }
 
     private function sleepMilliseconds(int $milliseconds): void
