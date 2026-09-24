@@ -1,8 +1,8 @@
 # Szukaj w Archiwach browser diagnostics
 
-Use the browser diagnostic mode when live Szukaj w Archiwach HTML, pagination, photoslider behavior or image selection needs inspection.
+Use browser diagnostics when live Szukaj w Archiwach HTML, pagination, photoslider behavior or final image selection needs inspection.
 
-The standalone CLI already uses Chromium for current Szukaj w Archiwach unit/catalog page retrieval because live validation showed that a successful-looking Native HTTP response can expose only a partial catalog. `--browser-debug-dir` does not switch transport modes; it writes diagnostics for the browser work that the normal standalone SZA flow already performs.
+The standalone CLI already uses Chromium for current Szukaj w Archiwach unit/catalog retrieval and for the supported unit+ordinal image-acquisition flow. `--browser-debug-dir` does **not** switch transport modes; it only records JSON diagnostics for browser work the normal runtime already performs.
 
 ```bash
 php bin/mytree-scan download \
@@ -12,56 +12,55 @@ php bin/mytree-scan download \
   --browser-debug-dir=var/szukajwarchiwach-browser-debug
 ```
 
-When `--browser-debug-dir` is present:
+When enabled:
 
-- every active Playwright worker invocation writes a JSON manifest with navigation, response and selection events,
-- Video/WebM recording is intentionally disabled,
-- the worker prints the exact manifest path to stderr,
-- debug manifests intentionally do **not** contain cookie values.
+- every active Playwright worker invocation writes a JSON manifest,
+- active workers do not record video/WebM,
+- each manifest path is printed to stderr,
+- cookie values are never written to diagnostics.
 
-The diagnostic directory is normally placed under `var/`, which is ignored by Git.
-
-The JSON manifest uses schema:
+The manifest schema is:
 
 ```text
 mytree.szukajwarchiwach-browser-debug.v1
 ```
 
-Useful event fields include:
+Useful events include:
 
-- requested and final navigation URLs,
+- requested/final navigation URLs,
 - HTTP status and page title,
 - browser-visible scan-thumbnail count,
-- selected one-based scan ordinal, page number and position on the page,
+- selected one-based scan ordinal, page and offset,
 - selected `data-plikid` and preview URL,
 - photoslider iframe URL,
-- official `Link do skanu` viewer URL extracted from the photoslider panel,
-- recognized final image candidates from `photos.szukajwarchiwach.gov.pl`,
-- selected original/full-resolution candidate,
-- browser block/error information.
+- photoslider-rendered readiness,
+- click of the portal's `Link do scanu` control (`Link do skanu` is tolerated as a wording variant),
+- provider-emitted `/skan/-/skan/<token>` viewer URL,
+- recognized image candidates from `photos.szukajwarchiwach.gov.pl`,
+- selected final original/full-resolution image,
+- browser block/error details.
 
 ## Unit + ordinal browser flow
 
-The current implementation deliberately follows the portal's normal browser UI instead of trying to infer the target image from an `/obiekty/<id>` page.
+For requested ordinal `N` the worker:
 
-For a requested scan ordinal `N` the worker:
-
-1. opens the canonical unit page in a normal Chromium session,
-2. uses the portal's **200 Wpisy** paginator option,
-3. if more than 200 scans exist, opens the paginator page containing `N`,
-4. selects the thumbnail at `((N - 1) mod 200) + 1`,
-5. verifies the thumbnail's visible scan number and `data-plikid` against the resolved catalog object,
+1. opens the canonical unit page in Chromium,
+2. uses the portal's **200 Wpisy** option when available,
+3. navigates to the gallery page containing `N` when more than 200 scans exist,
+4. selects `((N - 1) mod 200) + 1`,
+5. verifies the visible ordinal and `data-plikid` against catalog resolution,
 6. clicks the portal's `load-photo-slider` control,
-7. waits for the provider-created photoslider iframe,
-8. clicks **Link do skanu** inside that iframe,
-9. reads the official `/skan/-/skan/<opaque-token>` URL exposed by the side panel,
-10. opens that official viewer in the same browser context and captures the actual image response from `photos.szukajwarchiwach.gov.pl`.
+7. waits for the matching photoslider iframe,
+8. waits until the photoslider application has actually rendered,
+9. clicks **Link do scanu** / tolerated **Link do skanu**,
+10. reads the provider-emitted public `/skan/-/skan/<opaque-token>` locator,
+11. opens that viewer and captures the actual image response.
 
-No photo token or `_max` URL is synthesized.
+No photo URL or `_max` suffix is synthesized.
 
-## Confirmed unit 11959850 mapping
+## Confirmed live mapping used during P2
 
-A 2026-09-24 captured unit page rendered with `200 Wpisy` exposes all 154 thumbnails at once. The HTML itself identifies scan 79 as:
+The 2026-09-24 live validation used unit `11959850`. In the portal's 200-entry gallery, scan 79 was exposed as:
 
 ```text
 scan ordinal: 79
@@ -69,7 +68,7 @@ data-plikid: 6956791
 preview token: 3628fd030c0f3c8b8e785a3724235e654775f21fd483fcc668e0af77a69359a7_mid
 ```
 
-Clicking that thumbnail creates a photoslider iframe whose query includes:
+Clicking that thumbnail created a photoslider iframe containing:
 
 ```text
 plikid=6956791
@@ -77,10 +76,12 @@ jednostkaid=11959850
 liczbawszystkichskanow=154
 ```
 
-This supersedes the earlier object-viewer diagnostic that observed an unrelated `f7509c..._mid` image among multiple previews. That response was not evidence for the identity of scan 79.
+The final `Link do scanu` flow then downloaded the correct full-resolution scan 79.
 
-## Catalog page-size optimization
+An earlier object-viewer experiment observed `f7509c..._mid` among multiple previews. That response was unrelated to the selected scan and is retained only as diagnostic history, not as identity evidence.
 
-The catalog page worker used for discovery still prefers the portal's observed 200-entry catalog form so catalog resolution can normally complete in one browser render for units with up to 200 scans. The download worker independently follows the visible paginator UI because its purpose is to reproduce the user-facing scan-selection flow.
+## Catalog optimization
+
+The catalog page worker prefers the observed 200-entry representation so a unit with at most 200 scans can normally be enumerated in one browser render. Pagination remains bounded and available when required.
 
 Do not commit generated manifests. They are runtime diagnostics only.
