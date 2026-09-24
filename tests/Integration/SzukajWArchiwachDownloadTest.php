@@ -104,19 +104,6 @@ final class SzukajWArchiwachDownloadTest extends TestCase
             $this->fixture('multi-scan.html'),
             self::UNIT_URL,
         ));
-        $http->respond(self::VIEWER_URL, new HttpResponse(
-            200,
-            ['content-type' => ['text/html']],
-            $this->fixture('object-viewer-missing.html'),
-            self::VIEWER_URL,
-        ));
-
-        $browser->respondPage(self::VIEWER_URL, new HttpResponse(
-            200,
-            ['content-type' => ['text/html']],
-            $this->fixture('object-viewer-missing.html'),
-            self::VIEWER_URL,
-        ));
         $browser->respondScanImage(self::VIEWER_URL, $this->imageResponse());
 
         $provider = $this->provider($http, browserSessionClient: $browser);
@@ -131,12 +118,10 @@ final class SzukajWArchiwachDownloadTest extends TestCase
         self::assertSame(self::VIEWER_URL, $result->viewerUrl);
         self::assertSame(self::PHOTO_ASSET_URL, $result->downloadUrl);
         self::assertSame([
-            'page:' . self::VIEWER_URL,
             'scan-image:' . self::VIEWER_URL,
         ], $browser->requests);
         self::assertSame([
             self::UNIT_URL,
-            self::VIEWER_URL,
         ], $http->requests);
     }
 
