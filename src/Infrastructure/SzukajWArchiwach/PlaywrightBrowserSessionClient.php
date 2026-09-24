@@ -34,7 +34,26 @@ final readonly class PlaywrightBrowserSessionClient implements BrowserSessionCli
         return $this->run('scan-image', $viewerUrl);
     }
 
-    private function run(string $action, string $url): HttpResponse
+    public function fetchUnitScanImage(
+        string $unitUrl,
+        int $scanOrdinal,
+        string $expectedObjectId,
+    ): HttpResponse {
+        if ($scanOrdinal < 1) {
+            throw new \InvalidArgumentException('Szukaj w Archiwach scan ordinal must be positive.');
+        }
+        if (preg_match('~^[1-9]\\d*$~D', $expectedObjectId) !== 1) {
+            throw new \InvalidArgumentException('Szukaj w Archiwach expected object id must be a positive integer.');
+        }
+
+        return $this->run('unit-scan-image', $unitUrl, [
+            '--scan-number=' . $scanOrdinal,
+            '--expected-object-id=' . $expectedObjectId,
+        ]);
+    }
+
+    /** @param list<string> $extraArguments */
+    private function run(string $action, string $url, array $extraArguments = []): HttpResponse
     {
         $worker = $this->workerPath ?? $this->defaultWorkerFor($action);
         if (!is_file($worker)) {
@@ -47,6 +66,7 @@ final readonly class PlaywrightBrowserSessionClient implements BrowserSessionCli
             $action,
             $url,
             '--timeout-ms=' . ($this->timeoutSeconds * 1000),
+            ...$extraArguments,
         ];
         if ($this->debugDirectory !== null) {
             $command[] = '--debug-dir=' . $this->debugDirectory;
@@ -149,7 +169,7 @@ final readonly class PlaywrightBrowserSessionClient implements BrowserSessionCli
 
         return $runtime . match ($action) {
             'page' => 'szukajwarchiwach-page.mjs',
-            'scan-image' => 'szukajwarchiwach-scan-image.mjs',
+            'scan-image', 'unit-scan-image' => 'szukajwarchiwach-scan-image.mjs',
             default => throw new \InvalidArgumentException('Unsupported Szukaj w Archiwach browser action.'),
         };
     }
