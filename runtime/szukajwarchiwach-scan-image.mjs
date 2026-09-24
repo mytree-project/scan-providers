@@ -7,6 +7,7 @@ import { chromium } from 'playwright';
 
 const BOOTSTRAP_URL = 'https://www.szukajwarchiwach.gov.pl/';
 const PHOTO_HOST = 'photos.szukajwarchiwach.gov.pl';
+const SELECTED_CLASS_RE = /(?:^|[-_\s])(active|selected|current|wybrany|wybrana|aktywny|aktywna|is-active|slick-current|swiper-slide-active)(?:$|[-_\s])/i;
 
 const action = process.argv[2] ?? '';
 const targetUrl = process.argv[3] ?? '';
@@ -129,7 +130,7 @@ async function fetchScanImage(context, page) {
         return selectDirectViewerCandidate(candidates, viewerResponse.status(), page.url());
     }
 
-    const binding = await bindAndActivateObject(page, objectId);
+    const binding = await inspectAndActivateObject(page, objectId);
     debugEvent('scan:object-binding', binding);
     if (!binding.bound || binding.preview_url === null) {
         fail(
@@ -145,6 +146,7 @@ async function fetchScanImage(context, page) {
 
     debugEvent('scan:object-identity', {
         object_id: objectId,
+        binding_strategy: binding.binding_strategy,
         preview_url: binding.preview_url,
         identity: targetIdentity,
     });
@@ -209,155 +211,251 @@ async function fetchScanImage(context, page) {
     return responsePayload(selected);
 }
 
-async function bindAndActivateObject(page, objectId) {
-    return await page.evaluate(({ objectId, photoHost }) => {
+async function inspectAndActivateObject(page, objectId) {
+    return await page.evaluate(({ objectId, photoHost, selectedClassPattern }) => {
+        const selectedClassRe = new RegExp(selectedClassPattern, 'i');
         const objectPath = `/obiekty/${objectId}`;
-        const markers = [];
-
-        for (const selector of [
-            `[data-plikid="${objectId}"]`,
-            `[data-object-id="${objectId}"]`,
-            `[data-id="${objectId}"]`,
-        ]) {
-            markers.push(...document.querySelectorAll(selector));
-        }
-
-        for (const anchor of document.querySelectorAll('a[href]')) {
-            try {
-                const url = new URL(anchor.href, document.baseURI);
-                if (url.pathname.endsWith(objectPath)) {
-                    markers.push(anchor);
-                }
-            } catch {
-                // Ignore malformed href values.
+        const photoImages = [...document.querySelectorAll('img')].filter((image) => {
+            const raw = image.currentSrc || image.src || '';
+            if (raw === '') {
+                return false;
             }
-        }
+            try {
+                const url = new URL(raw, document.baseURI);
+                return url.protocol === 'https:' && url.hostname === photoHost;
+            } catch {
+                return false;
+            }
+        });
 
-        const uniqueMarkers = [...new Set(markers)];
-        const diagnostics = uniqueMarkers.map((marker) => ({
-            tag: marker.tagName,
-            id: marker.id || null,
-            class: marker.className || null,
-            data_plikid: marker.getAttribute?.('data-plikid') ?? null,
-            href: marker.href ?? null,
-        }));
-        const bindings = [];
+        const ancestorSummary = (element) => {
+            const result = [];
+            let current = element;
+            for (let depth = 0; current !== null && depth <= 6; depth += 1, current = current.parentElement) {
+                result.push({
+                    depth,
+                    tag: current.tagName,
+                    id: current.id || null,
+                    class: typeof current.className === 'string' && current.className !== '' ? current.className : null,
+                    data_plikid: current.getAttribute?.('data-plikid') ?? null,
+                    aria_current: current.getAttribute?.('aria-current') ?? null,
+                    data_selected: current.getAttribute?.('data-selected') ?? null,
+                    href: current.href ?? null,
+                });
+            }
+            return result;
+        };
 
-        for (const marker of uniqueMarkers) {
-            let container = marker;
-            for (let depth = 0; container !== null && depth <= 8; depth += 1, container = container.parentElement) {
-                const images = [];
-                if (container.matches?.('img')) {
-                    images.push(container);
+        const selectedSignals = (ancestors) => {
+            const signals = [];
+            for (const ancestor of ancestors) {
+                if (ancestor.aria_current !== null && ancestor.aria_current !== 'false') {
+                    signals.push(`aria-current:${ancestor.aria_current}`);
                 }
-                images.push(...container.querySelectorAll('img'));
-
-                const photoImages = [];
-                const seenImages = new Set();
-                for (const image of images) {
-                    const raw = image.currentSrc || image.src || '';
-                    if (raw === '') {
-                        continue;
-                    }
-                    try {
-                        const url = new URL(raw, document.baseURI);
-                        if (url.protocol !== 'https:' || url.hostname !== photoHost) {
-                            continue;
-                        }
-                        if (!seenImages.has(url.toString())) {
-                            seenImages.add(url.toString());
-                            photoImages.push({ image, url: url.toString() });
-                        }
-                    } catch {
-                        // Ignore malformed image URLs.
-                    }
+                if (ancestor.data_selected === 'true' || ancestor.data_selected === '1') {
+                    signals.push(`data-selected:${ancestor.data_selected}`);
                 }
+                if (ancestor.class !== null && selectedClassRe.test(ancestor.class)) {
+                    signals.push(`class:${ancestor.class}`);
+                }
+            }
+            return [...new Set(signals)];
+        };
 
-                if (photoImages.length !== 1) {
+        const photos = photoImages.map((image, index) => {
+            const src = new URL(image.currentSrc || image.src, document.baseURI).toString();
+            const rect = image.getBoundingClientRect();
+            const ancestors = ancestorSummary(image);
+            const closestAnchor = image.closest('a[href]');
+            const closestEntry = image.closest('[data-plikid]');
+            return {
+                index,
+                src,
+                id: image.id || null,
+                class: image.className || null,
+                alt: image.alt || null,
+                width: Math.round(rect.width),
+                height: Math.round(rect.height),
+                natural_width: image.naturalWidth || 0,
+                natural_height: image.naturalHeight || 0,
+                visible: rect.width > 0 && rect.height > 0,
+                closest_anchor_href: closestAnchor?.href ?? null,
+                closest_data_plikid: closestEntry?.getAttribute('data-plikid') ?? null,
+                outside_scan_entry: closestEntry === null,
+                selected_signals: selectedSignals(ancestors),
+                ancestors,
+            };
+        });
+
+        const scanEntries = [...document.querySelectorAll('[data-plikid]')].slice(0, 250).map((entry) => {
+            const images = [...entry.querySelectorAll('img')].map((image) => image.currentSrc || image.src || '').filter(Boolean);
+            const anchor = entry.matches?.('a[href]') ? entry : entry.querySelector('a[href]');
+            return {
+                tag: entry.tagName,
+                data_plikid: entry.getAttribute('data-plikid'),
+                id: entry.id || null,
+                class: entry.className || null,
+                href: anchor?.href ?? null,
+                text: (entry.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 160),
+                image_srcs: images.slice(0, 5),
+                outer_html: entry.outerHTML.slice(0, 800),
+            };
+        });
+
+        const attributeMatches = [];
+        for (const element of document.querySelectorAll('*')) {
+            for (const attribute of element.attributes ?? []) {
+                if (!attribute.value.includes(objectId)) {
                     continue;
                 }
-
-                const anchors = [...container.querySelectorAll('a[href]')];
-                if (container.matches?.('a[href]')) {
-                    anchors.unshift(container);
-                }
-
-                const publicViewer = anchors
-                    .map((anchor) => anchor.href)
-                    .find((href) => href.includes('/skan/-/skan/')) ?? null;
-                const photoLinks = anchors
-                    .map((anchor) => anchor.href)
-                    .filter((href) => {
-                        try {
-                            const url = new URL(href, document.baseURI);
-                            return url.protocol === 'https:' && url.hostname === photoHost;
-                        } catch {
-                            return false;
-                        }
-                    });
-
-                bindings.push({
-                    marker,
-                    container,
-                    image: photoImages[0].image,
-                    previewUrl: photoImages[0].url,
-                    publicViewer,
-                    photoLinks,
-                    depth,
+                attributeMatches.push({
+                    tag: element.tagName,
+                    id: element.id || null,
+                    class: typeof element.className === 'string' && element.className !== '' ? element.className : null,
+                    attribute: attribute.name,
+                    value: attribute.value.slice(0, 500),
                 });
+                if (attributeMatches.length >= 50) {
+                    break;
+                }
+            }
+            if (attributeMatches.length >= 50) {
                 break;
             }
         }
 
-        const bestDepth = bindings.length === 0
-            ? null
-            : Math.min(...bindings.map((binding) => binding.depth));
-        const bestBindings = bindings.filter((binding) => binding.depth === bestDepth);
-        const distinctByPreview = new Map();
-        for (const binding of bestBindings) {
-            if (!distinctByPreview.has(binding.previewUrl)) {
-                distinctByPreview.set(binding.previewUrl, binding);
+        const interestingInputs = [...document.querySelectorAll('input,button,select,textarea')]
+            .filter((element) => {
+                const name = element.getAttribute('name') ?? '';
+                const value = element.getAttribute('value') ?? '';
+                const id = element.id ?? '';
+                return /plik|skan|obiekt|object/i.test(`${name} ${id}`) || value.includes(objectId);
+            })
+            .slice(0, 100)
+            .map((element) => ({
+                tag: element.tagName,
+                type: element.getAttribute('type'),
+                name: element.getAttribute('name'),
+                id: element.id || null,
+                value: (element.getAttribute('value') ?? '').slice(0, 500),
+            }));
+
+        const inlineScriptMatches = [];
+        const needles = [objectId, '/skan/-/skan/', 'id-pliku', 'plikId', 'data-plikid', 'photos.szukajwarchiwach.gov.pl'];
+        for (const script of document.querySelectorAll('script:not([src])')) {
+            const text = script.textContent ?? '';
+            for (const needle of needles) {
+                let offset = text.indexOf(needle);
+                while (offset >= 0 && inlineScriptMatches.length < 40) {
+                    inlineScriptMatches.push({
+                        needle,
+                        snippet: text.slice(Math.max(0, offset - 220), Math.min(text.length, offset + needle.length + 380))
+                            .replace(/\s+/g, ' ')
+                            .trim(),
+                    });
+                    offset = text.indexOf(needle, offset + needle.length);
+                }
+                if (inlineScriptMatches.length >= 40) {
+                    break;
+                }
+            }
+            if (inlineScriptMatches.length >= 40) {
+                break;
             }
         }
 
-        const compactBindings = [...distinctByPreview.values()];
-        if (compactBindings.length !== 1) {
-            return {
-                bound: false,
-                object_id: objectId,
-                preview_url: null,
-                public_viewer_url: null,
-                explicit_photo_url: null,
-                marker_count: uniqueMarkers.length,
-                markers: diagnostics,
-                best_depth: bestDepth,
-                matching_preview_urls: compactBindings.map((binding) => binding.previewUrl),
-            };
+        const publicViewerLinks = [...document.querySelectorAll('a[href]')]
+            .map((anchor) => anchor.href)
+            .filter((href) => href.includes('/skan/-/skan/'))
+            .slice(0, 100);
+
+        const uniquePhotoSet = (items) => {
+            const bySrc = new Map();
+            for (const item of items) {
+                if (!bySrc.has(item.src)) {
+                    bySrc.set(item.src, item);
+                }
+            }
+            return [...bySrc.values()];
+        };
+
+        const byDataPlikid = uniquePhotoSet(photos.filter((photo) => photo.closest_data_plikid === objectId));
+        const byObjectAnchor = uniquePhotoSet(photos.filter((photo) => {
+            if (photo.closest_anchor_href === null) {
+                return false;
+            }
+            try {
+                return new URL(photo.closest_anchor_href, document.baseURI).pathname.endsWith(objectPath);
+            } catch {
+                return false;
+            }
+        }));
+        const bySelectedSignal = uniquePhotoSet(photos.filter((photo) => photo.selected_signals.length > 0));
+        const outsideEntries = uniquePhotoSet(photos.filter((photo) => photo.outside_scan_entry && photo.visible));
+
+        let bindingStrategy = null;
+        let selected = null;
+        for (const [strategy, matches] of [
+            ['data-plikid', byDataPlikid],
+            ['object-anchor', byObjectAnchor],
+            ['selected-state', bySelectedSignal],
+            ['single-photo-outside-scan-entry', outsideEntries],
+        ]) {
+            if (matches.length === 1) {
+                bindingStrategy = strategy;
+                selected = matches[0];
+                break;
+            }
         }
 
-        const binding = compactBindings[0];
-        const previewIdentity = identityFromPhotoUrl(binding.previewUrl, photoHost);
-        const explicitPhoto = binding.photoLinks.find((href) => (
-            identityFromPhotoUrl(href, photoHost) === previewIdentity
-        )) ?? null;
-        const clickable = binding.image.closest('a,button,[role="button"]') ?? binding.image;
-
-        clickable.scrollIntoView({ block: 'center', inline: 'center' });
-        clickable.click();
+        let publicViewer = null;
+        let explicitPhoto = null;
+        let clickedTag = null;
+        if (selected !== null) {
+            const image = photoImages[selected.index];
+            const clickable = image.closest('a,button,[role="button"]') ?? image;
+            const container = image.closest('[data-plikid],li,article,figure,.item,.scan,.skan,.slide,.thumbnail,.thumb') ?? image.parentElement;
+            const anchors = container === null ? [] : [...container.querySelectorAll('a[href]')];
+            publicViewer = anchors.map((anchor) => anchor.href).find((href) => href.includes('/skan/-/skan/')) ?? null;
+            explicitPhoto = anchors.map((anchor) => anchor.href).find((href) => {
+                try {
+                    const url = new URL(href, document.baseURI);
+                    return url.protocol === 'https:' && url.hostname === photoHost;
+                } catch {
+                    return false;
+                }
+            }) ?? null;
+            clickable.scrollIntoView({ block: 'center', inline: 'center' });
+            clickable.click();
+            clickedTag = clickable.tagName;
+        }
 
         return {
-            bound: true,
+            bound: selected !== null,
+            binding_strategy: bindingStrategy,
             object_id: objectId,
-            preview_url: binding.previewUrl,
-            public_viewer_url: binding.publicViewer,
+            preview_url: selected?.src ?? null,
+            public_viewer_url: publicViewer,
             explicit_photo_url: explicitPhoto,
-            marker_count: uniqueMarkers.length,
-            markers: diagnostics,
-            best_depth: binding.depth,
-            matching_preview_urls: [binding.previewUrl],
-            clicked_tag: clickable.tagName,
+            clicked_tag: clickedTag,
+            candidate_sets: {
+                by_data_plikid: byDataPlikid.map((photo) => photo.src),
+                by_object_anchor: byObjectAnchor.map((photo) => photo.src),
+                by_selected_signal: bySelectedSignal.map((photo) => photo.src),
+                outside_scan_entries: outsideEntries.map((photo) => photo.src),
+            },
+            photo_elements: photos,
+            scan_entries: scanEntries,
+            attribute_matches: attributeMatches,
+            interesting_inputs: interestingInputs,
+            inline_script_matches: inlineScriptMatches,
+            public_viewer_links: publicViewerLinks,
         };
-    }, { objectId, photoHost: PHOTO_HOST });
+    }, {
+        objectId,
+        photoHost: PHOTO_HOST,
+        selectedClassPattern: SELECTED_CLASS_RE.source,
+    });
 }
 
 async function captureExplicitBoundAsset(context, assetUrl, expectedIdentity, candidates) {
