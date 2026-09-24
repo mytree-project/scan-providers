@@ -41,10 +41,15 @@ final readonly class SzukajWArchiwachAssetDownloader
         }
 
         [$unitId, $objectId] = $this->assertResolvedObject($scan);
+        $scanOrdinal = $this->assertScanOrdinal($scan);
         $objectViewerUrl = $scan->scan->viewerUrl;
 
         if ($this->browserSessionClient !== null) {
-            [$binary, $mimeType] = $this->downloadResolvedObjectWithBrowser($objectViewerUrl);
+            [$binary, $mimeType] = $this->downloadResolvedObjectWithBrowser(
+                unitId: $unitId,
+                scanOrdinal: $scanOrdinal,
+                objectId: $objectId,
+            );
         } else {
             [$binary, $mimeType] = $this->downloadResolvedObjectWithoutBrowser($scan, $objectViewerUrl);
         }
@@ -68,9 +73,20 @@ final readonly class SzukajWArchiwachAssetDownloader
     }
 
     /** @return array{0:HttpResponse,1:string} */
-    private function downloadResolvedObjectWithBrowser(string $objectViewerUrl): array
-    {
-        $binary = $this->browserSessionClient?->fetchScanImage($objectViewerUrl);
+    private function downloadResolvedObjectWithBrowser(
+        string $unitId,
+        int $scanOrdinal,
+        string $objectId,
+    ): array {
+        $unitUrl = sprintf(
+            'https://www.szukajwarchiwach.gov.pl/jednostka/-/jednostka/%s',
+            $unitId,
+        );
+        $binary = $this->browserSessionClient?->fetchUnitScanImage(
+            $unitUrl,
+            $scanOrdinal,
+            $objectId,
+        );
         if ($binary === null) {
             throw new UnexpectedProviderResponseException(
                 'Szukaj w Archiwach browser-session transport is unexpectedly unavailable.',
@@ -83,7 +99,7 @@ final readonly class SzukajWArchiwachAssetDownloader
         );
         if ($mimeType === null) {
             throw new UnexpectedProviderResponseException(
-                'Szukaj w Archiwach browser session did not return a recognized image asset from the resolved object viewer.',
+                'Szukaj w Archiwach browser session did not return a recognized image asset from the unit gallery flow.',
             );
         }
 
@@ -224,6 +240,21 @@ final readonly class SzukajWArchiwachAssetDownloader
         }
 
         return [$unitId, $objectId];
+    }
+
+    private function assertScanOrdinal(ResolvedScan $scan): int
+    {
+        $ordinal = $scan->scan->metadata['scan_ordinal'] ?? null;
+        if (is_int($ordinal) && $ordinal > 0) {
+            return $ordinal;
+        }
+        if (is_string($ordinal) && preg_match('~^[1-9]\\d*$~D', $ordinal) === 1) {
+            return (int) $ordinal;
+        }
+
+        throw new \InvalidArgumentException(
+            'Resolved Szukaj w Archiwach scan does not contain a valid scan ordinal.',
+        );
     }
 
     private function suggestedFilename(string $unitId, string $objectId, string $mimeType): string
