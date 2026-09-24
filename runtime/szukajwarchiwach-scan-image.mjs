@@ -6,24 +6,37 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { chromium } from 'playwright';
 
 const BOOTSTRAP_URL = 'https://www.szukajwarchiwach.gov.pl/';
+const PORTAL_HOSTS = new Set(['www.szukajwarchiwach.gov.pl', 'szukajwarchiwach.gov.pl']);
 const PHOTO_HOST = 'photos.szukajwarchiwach.gov.pl';
-const SELECTED_CLASS_RE = /(?:^|[-_\s])(active|selected|current|wybrany|wybrana|aktywny|aktywna|is-active|slick-current|swiper-slide-active)(?:$|[-_\s])/i;
+const UNIT_PAGE_SIZE = 200;
 
 const action = process.argv[2] ?? '';
 const targetUrl = process.argv[3] ?? '';
 const extraArgs = process.argv.slice(4);
 const timeoutArg = extraArgs.find((argument) => argument.startsWith('--timeout-ms='));
 const debugDirArg = extraArgs.find((argument) => argument.startsWith('--debug-dir='));
+const scanNumberArg = extraArgs.find((argument) => argument.startsWith('--scan-number='));
+const expectedObjectIdArg = extraArgs.find((argument) => argument.startsWith('--expected-object-id='));
+
 const timeoutMs = Number.parseInt(timeoutArg?.slice('--timeout-ms='.length) ?? '60000', 10);
+const scanNumber = scanNumberArg === undefined
+    ? null
+    : Number.parseInt(scanNumberArg.slice('--scan-number='.length), 10);
+const expectedObjectId = expectedObjectIdArg === undefined
+    ? null
+    : expectedObjectIdArg.slice('--expected-object-id='.length);
 const debugDir = debugDirArg === undefined
     ? null
     : path.resolve(process.cwd(), debugDirArg.slice('--debug-dir='.length));
-const runId = `${new Date().toISOString().replace(/[:.]/g, '-')}-${process.pid}-${action}-bound-object`;
+
+const runId = `${new Date().toISOString().replace(/[:.]/g, '-')}-${process.pid}-${action}`;
 const debugState = {
     schema: 'mytree.szukajwarchiwach-browser-debug.v1',
     run_id: runId,
     action,
     target_url: targetUrl,
+    scan_number: scanNumber,
+    expected_object_id: expectedObjectId,
     started_at: new Date().toISOString(),
     events: [],
 };
@@ -43,9 +56,9 @@ async function main() {
     try {
         browser = await chromium.launch({ headless: true });
         context = await browser.newContext({ viewport: { width: 1280, height: 720 } });
+
         const page = await context.newPage();
         observeDebugPage(page);
-        context.on('page', observeDebugPage);
 
         debugEvent('bootstrap:start', { url: BOOTSTRAP_URL });
         const bootstrapResponse = await page.goto(BOOTSTRAP_URL, {
@@ -59,7 +72,17 @@ async function main() {
             title: await page.title().catch(() => ''),
         });
 
-        result = await fetchScanImage(context, page);
+        if (action === 'scan-image') {
+            result = await fetchDirectViewerImage(context, page, targetUrl);
+        } else {
+            result = await fetchUnitOrdinalImage(
+                context,
+                page,
+                targetUrl,
+                scanNumber,
+                expectedObjectId,
+            );
+        }
     } catch (error) {
         failure = error;
         debugState.error = error instanceof Error ? error.message : String(error);
@@ -85,22 +108,314 @@ async function main() {
     return result;
 }
 
-async function fetchScanImage(context, page) {
+async function fetchUnitOrdinalImage(context, page, unitUrl, ordinal, expectedId) {
+    const unitId = unitIdFromUrl(unitUrl);
+    if (unitId === null) {
+        fail(`Unit-scan browser flow received an unsupported unit URL: ${unitUrl}`);
+    }
+
+    debugEvent('unit:navigate:start', { url: unitUrl, unit_id: unitId });
+    const response = await page.goto(canonicalUnitUrl(unitId), {
+        waitUntil: 'domcontentloaded',
+        timeout: timeoutMs,
+    });
+    if (response === null) {
+        fail('Unit navigation did not produce an HTTP response.');
+    }
+
+    await settlePage(page);
+    await assertNotBlocked(page);
+
+    debugEvent('unit:navigate:done', {
+        status: response.status(),
+        url: page.url(),
+        title: await page.title().catch(() => ''),
+        thumbnail_count: await page.locator('a.load-photo-slider').count().catch(() => 0),
+    });
+
+    await choosePageSize200(page);
+
+    const targetPageNumber = Math.floor((ordinal - 1) / UNIT_PAGE_SIZE) + 1;
+    const indexOnPage = (ordinal - 1) % UNIT_PAGE_SIZE;
+
+    if (targetPageNumber > 1) {
+        await chooseCatalogPage(page, targetPageNumber);
+    }
+
+    await settlePage(page);
+    await assertNotBlocked(page);
+
+    const thumbnails = page.locator('a.load-photo-slider');
+    const thumbnailCount = await thumbnails.count();
+    if (indexOnPage >= thumbnailCount) {
+        fail(
+            `Szukaj w Archiwach unit page ${targetPageNumber} contains ${thumbnailCount} visible scan thumbnails; `
+            + `cannot select scan ${ordinal} at page offset ${indexOnPage + 1}.`,
+        );
+    }
+
+    const thumbnail = thumbnails.nth(indexOnPage);
+    const objectId = await thumbnail.getAttribute('data-plikid');
+    const previewUrl = await thumbnail.locator('img').first().getAttribute('src').catch(() => null);
+    const displayedOrdinalText = await thumbnail
+        .locator('xpath=..')
+        .locator('.number-of-scan')
+        .first()
+        .textContent()
+        .catch(() => null);
+    const displayedOrdinal = displayedOrdinalText === null
+        ? null
+        : Number.parseInt(displayedOrdinalText.trim(), 10);
+
+    debugEvent('unit:thumbnail-selected', {
+        scan_number: ordinal,
+        target_page: targetPageNumber,
+        index_on_page: indexOnPage + 1,
+        thumbnail_count: thumbnailCount,
+        displayed_scan_number: Number.isInteger(displayedOrdinal) ? displayedOrdinal : null,
+        object_id: objectId,
+        preview_url: previewUrl,
+    });
+
+    if (displayedOrdinal !== null && Number.isInteger(displayedOrdinal) && displayedOrdinal !== ordinal) {
+        fail(
+            `Szukaj w Archiwach scan ordering mismatch: requested ${ordinal}, `
+            + `but the selected thumbnail is labeled ${displayedOrdinal}.`,
+        );
+    }
+
+    if (objectId === null || !/^[1-9]\d*$/.test(objectId)) {
+        fail(`Selected scan ${ordinal} does not expose a valid data-plikid.`);
+    }
+    if (expectedId !== null && objectId !== expectedId) {
+        fail(
+            `Resolved object mismatch for scan ${ordinal}: catalog resolved ${expectedId}, `
+            + `but browser thumbnail exposes ${objectId}.`,
+        );
+    }
+
+    await thumbnail.scrollIntoViewIfNeeded();
+    await thumbnail.click();
+
+    const frame = await waitForPhotoSliderFrame(page, objectId);
+    debugEvent('unit:photoslider-opened', {
+        scan_number: ordinal,
+        object_id: objectId,
+        frame_url: frame.url(),
+    });
+
+    const publicViewerUrl = await extractPublicViewerUrlFromPhotoSlider(frame);
+    debugEvent('unit:public-viewer-resolved', {
+        scan_number: ordinal,
+        object_id: objectId,
+        viewer_url: publicViewerUrl,
+    });
+
+    const viewerPage = await context.newPage();
+    observeDebugPage(viewerPage);
+
+    return await fetchDirectViewerImage(context, viewerPage, publicViewerUrl);
+}
+
+async function choosePageSize200(page) {
+    const paginator = page.locator('[data-qa-id="paginator"]').first();
+    if (await paginator.count() === 0) {
+        fail('Szukaj w Archiwach unit page does not expose the scan paginator.');
+    }
+
+    const current = await paginator
+        .locator('.pagination-items-per-page .dropdown-toggle')
+        .first()
+        .textContent()
+        .catch(() => null);
+
+    if (current !== null && /^\s*200\b/.test(current)) {
+        debugEvent('unit:page-size', { page_size: UNIT_PAGE_SIZE, changed: false });
+        return;
+    }
+
+    const toggle = paginator.locator('.pagination-items-per-page .dropdown-toggle').first();
+    await toggle.click();
+
+    const link200 = paginator
+        .locator('.pagination-items-per-page .dropdown-menu a')
+        .filter({ hasText: /^\s*200\s*$/ })
+        .first();
+
+    if (await link200.count() === 0) {
+        fail('Szukaj w Archiwach paginator does not expose the 200-entries page-size option.');
+    }
+
+    await clickNavigation(page, link200);
+    await settlePage(page);
+
+    const updated = await page
+        .locator('[data-qa-id="paginator"] .pagination-items-per-page .dropdown-toggle')
+        .first()
+        .textContent()
+        .catch(() => null);
+
+    if (updated === null || !/^\s*200\b/.test(updated)) {
+        fail('Szukaj w Archiwach did not switch the unit gallery to 200 entries per page.');
+    }
+
+    debugEvent('unit:page-size', { page_size: UNIT_PAGE_SIZE, changed: true, url: page.url() });
+}
+
+async function chooseCatalogPage(page, pageNumber) {
+    const paginator = page.locator('[data-qa-id="paginator"]').first();
+    const pageLink = paginator
+        .locator('ul.pagination a')
+        .filter({ hasText: new RegExp(`^\\s*${pageNumber}\\s*$`) })
+        .first();
+
+    if (await pageLink.count() === 0) {
+        fail(`Szukaj w Archiwach paginator does not expose catalog page ${pageNumber}.`);
+    }
+
+    await clickNavigation(page, pageLink);
+    await settlePage(page);
+    debugEvent('unit:page-selected', { page_number: pageNumber, url: page.url() });
+}
+
+async function clickNavigation(page, locator) {
+    const before = page.url();
+
+    await Promise.all([
+        page.waitForURL((url) => url.toString() !== before, {
+            timeout: Math.min(timeoutMs, 15000),
+            waitUntil: 'domcontentloaded',
+        }).catch(() => null),
+        locator.click(),
+    ]);
+}
+
+async function waitForPhotoSliderFrame(page, objectId) {
+    const deadline = Date.now() + Math.min(timeoutMs, 15000);
+
+    while (Date.now() < deadline) {
+        for (const frame of page.frames()) {
+            const frameUrl = frame.url();
+            if (!frameUrl.includes('/plugins/photoslider/dist/index.html')) {
+                continue;
+            }
+            try {
+                const parsed = new URL(frameUrl);
+                if (parsed.searchParams.get('plikid') === objectId) {
+                    return frame;
+                }
+            } catch {
+                // Keep waiting for the expected photoslider frame.
+            }
+        }
+        await page.waitForTimeout(100);
+    }
+
+    const frames = page.frames().map((frame) => frame.url());
+    debugEvent('unit:photoslider-missing', { object_id: objectId, frames });
+    fail(`Clicking scan object ${objectId} did not open the expected Szukaj w Archiwach photoslider iframe.`);
+}
+
+async function extractPublicViewerUrlFromPhotoSlider(frame) {
+    const triggerSelectors = [
+        'a',
+        'button',
+        '[role="button"]',
+    ];
+    let trigger = null;
+
+    for (const selector of triggerSelectors) {
+        const candidate = frame
+            .locator(selector)
+            .filter({ hasText: /^\s*Link do skanu\s*$/i })
+            .first();
+        if (await candidate.count() > 0) {
+            trigger = candidate;
+            break;
+        }
+    }
+
+    if (trigger === null) {
+        const bodyText = await frame.locator('body').innerText().catch(() => '');
+        debugEvent('unit:scan-link-trigger-missing', {
+            frame_url: frame.url(),
+            body_text_excerpt: bodyText.slice(0, 3000),
+        });
+        fail('Szukaj w Archiwach photoslider does not expose the "Link do skanu" control.');
+    }
+
+    await trigger.click();
+    debugEvent('unit:scan-link-trigger-clicked', { frame_url: frame.url() });
+
+    const deadline = Date.now() + Math.min(timeoutMs, 10000);
+    while (Date.now() < deadline) {
+        const controls = frame.locator('input, textarea');
+        const count = await controls.count();
+
+        for (let index = 0; index < count; index += 1) {
+            const control = controls.nth(index);
+            const value = await control.inputValue().catch(() => '');
+            const normalized = normalizePublicViewerUrl(value, frame.url());
+            if (normalized !== null) {
+                return normalized;
+            }
+        }
+
+        const bodyText = await frame.locator('body').innerText().catch(() => '');
+        const textMatch = bodyText.match(
+            /https:\/\/(?:www\.)?szukajwarchiwach\.gov\.pl\/skan\/-\/skan\/[A-Za-z0-9_-]+/i,
+        );
+        if (textMatch !== null) {
+            const normalized = normalizePublicViewerUrl(textMatch[0], frame.url());
+            if (normalized !== null) {
+                return normalized;
+            }
+        }
+
+        await frame.page().waitForTimeout(100);
+    }
+
+    fail('Szukaj w Archiwach "Link do skanu" panel did not expose a recognizable public scan viewer URL.');
+}
+
+function normalizePublicViewerUrl(raw, baseUrl) {
+    if (typeof raw !== 'string' || raw.trim() === '') {
+        return null;
+    }
+
+    let parsed;
+    try {
+        parsed = new URL(raw.trim(), baseUrl);
+    } catch {
+        return null;
+    }
+
+    if (
+        parsed.protocol !== 'https:'
+        || !PORTAL_HOSTS.has(parsed.hostname)
+        || !/^\/skan\/-\/skan\/[A-Za-z0-9_-]+\/?$/.test(parsed.pathname)
+    ) {
+        return null;
+    }
+
+    parsed.hostname = 'www.szukajwarchiwach.gov.pl';
+    parsed.search = '';
+    parsed.hash = '';
+
+    return parsed.toString().replace(/\/$/, '');
+}
+
+async function fetchDirectViewerImage(context, page, viewerUrl) {
     const candidates = [];
     const pending = [];
 
-    const observePage = (observedPage) => {
-        observedPage.on('response', (response) => {
-            const promise = capturePhotoCandidate(response, candidates);
-            pending.push(promise);
-        });
-    };
+    page.on('response', (response) => {
+        const promise = capturePhotoCandidate(response, candidates);
+        pending.push(promise);
+    });
 
-    observePage(page);
-    context.on('page', observePage);
-
-    debugEvent('scan:navigate:start', { url: targetUrl });
-    const viewerResponse = await page.goto(targetUrl, {
+    debugEvent('viewer:navigate:start', { url: viewerUrl });
+    const viewerResponse = await page.goto(viewerUrl, {
         waitUntil: 'domcontentloaded',
         timeout: timeoutMs,
     });
@@ -110,451 +425,103 @@ async function fetchScanImage(context, page) {
 
     await settlePage(page);
     await Promise.allSettled(pending);
+    await assertNotBlocked(page);
 
+    debugEvent('viewer:navigate:done', {
+        status: viewerResponse.status(),
+        url: page.url(),
+        title: await page.title().catch(() => ''),
+        candidates: summarizeCandidates(candidates),
+    });
+
+    if (candidates.length === 0) {
+        fail(
+            `Scan viewer did not load a recognized image from ${PHOTO_HOST}. `
+            + `Viewer status=${viewerResponse.status()} url=${page.url()}`,
+        );
+    }
+
+    candidates.sort(compareImageCandidates);
+    const selected = candidates[0];
+
+    if (isKnownPreviewAsset(selected.url)) {
+        fail(
+            `Public scan viewer ${viewerUrl} exposed only preview-quality image responses; `
+            + 'refusing to silently accept _mid/_min/_thumb.',
+        );
+    }
+
+    debugEvent('viewer:selected-candidate', { selected: summarizeCandidate(selected) });
+
+    return responsePayload(selected);
+}
+
+async function capturePhotoCandidate(response, candidates) {
+    let parsed;
+    try {
+        parsed = new URL(response.url());
+    } catch {
+        return;
+    }
+
+    if (parsed.hostname !== PHOTO_HOST || response.status() < 200 || response.status() >= 300) {
+        return;
+    }
+
+    const headers = normalizeHeaders(response.headers());
+    const contentType = (headers['content-type']?.[0] ?? '').toLowerCase();
+    if (!contentType.startsWith('image/')) {
+        return;
+    }
+
+    let body;
+    try {
+        body = Buffer.from(await response.body());
+    } catch {
+        return;
+    }
+
+    if (!looksLikeImage(contentType, body)) {
+        return;
+    }
+
+    candidates.push({
+        status: response.status(),
+        url: response.url(),
+        headers,
+        body,
+    });
+}
+
+async function assertNotBlocked(page) {
     const title = await page.title().catch(() => '');
     const body = Buffer.from(await page.content(), 'utf8');
     if (isBlockPage(title, body)) {
         fail(`Browser session received an Imperva/forbidden page for ${page.url()}.`);
     }
-
-    debugEvent('scan:navigate:done', {
-        status: viewerResponse.status(),
-        url: page.url(),
-        title,
-        scan_entry_count: await page.locator('[data-plikid]').count().catch(() => 0),
-        candidates: summarizeCandidates(candidates),
-    });
-
-    const objectId = objectIdFromUrl(targetUrl);
-    if (objectId === null) {
-        return selectDirectViewerCandidate(candidates, viewerResponse.status(), page.url());
-    }
-
-    const binding = await inspectAndActivateObject(page, objectId);
-    debugEvent('scan:object-binding', binding);
-    if (!binding.bound || binding.preview_url === null) {
-        fail(
-            `Object viewer could not bind a unique photo element to resolved object ${objectId}; `
-            + 'refusing to select another scan from the page.',
-        );
-    }
-
-    const targetIdentity = photoIdentity(binding.preview_url);
-    if (targetIdentity === null) {
-        fail(`Resolved object ${objectId} is bound to an unsupported preview URL ${binding.preview_url}.`);
-    }
-
-    debugEvent('scan:object-identity', {
-        object_id: objectId,
-        binding_strategy: binding.binding_strategy,
-        preview_url: binding.preview_url,
-        identity: targetIdentity,
-    });
-
-    if (binding.explicit_photo_url !== null) {
-        await captureExplicitBoundAsset(context, binding.explicit_photo_url, targetIdentity, candidates);
-    }
-
-    if (binding.public_viewer_url !== null && isPublicViewerUrl(binding.public_viewer_url)) {
-        debugEvent('scan:object-public-viewer', { url: binding.public_viewer_url });
-        await page.goto(binding.public_viewer_url, {
-            waitUntil: 'domcontentloaded',
-            timeout: timeoutMs,
-        });
-        await settlePage(page);
-    } else {
-        await waitForContext(context);
-    }
-
-    await Promise.allSettled(pending);
-
-    const navigatedViewer = context.pages()
-        .map((observedPage) => observedPage.url())
-        .find((url) => isPublicViewerUrl(url)) ?? null;
-    if (navigatedViewer !== null && page.url() !== navigatedViewer) {
-        debugEvent('scan:object-public-viewer-after-activation', { url: navigatedViewer });
-        await page.goto(navigatedViewer, {
-            waitUntil: 'domcontentloaded',
-            timeout: timeoutMs,
-        });
-        await settlePage(page);
-        await Promise.allSettled(pending);
-    }
-
-    const targetCandidates = candidates
-        .filter((candidate) => photoIdentity(candidate.url) === targetIdentity)
-        .sort(compareImageCandidates);
-
-    debugEvent('scan:object-target-candidates', {
-        object_id: objectId,
-        identity: targetIdentity,
-        candidates: summarizeCandidates(targetCandidates),
-    });
-
-    if (targetCandidates.length === 0) {
-        fail(`Object viewer did not load any image response belonging to resolved object ${objectId}.`);
-    }
-
-    const selected = targetCandidates[0];
-    if (isKnownPreviewAsset(selected.url)) {
-        fail(
-            `Resolved object ${objectId} exposed only preview-quality image responses for its own photo identity; `
-            + 'refusing to substitute a different scan or silently accept _mid/_min/_thumb.',
-        );
-    }
-
-    debugEvent('scan:selected-candidate', {
-        object_id: objectId,
-        selected: summarizeCandidate(selected),
-    });
-
-    return responsePayload(selected);
-}
-
-async function inspectAndActivateObject(page, objectId) {
-    return await page.evaluate(({ objectId, photoHost, selectedClassPattern }) => {
-        const selectedClassRe = new RegExp(selectedClassPattern, 'i');
-        const objectPath = `/obiekty/${objectId}`;
-        const photoImages = [...document.querySelectorAll('img')].filter((image) => {
-            const raw = image.currentSrc || image.src || '';
-            if (raw === '') {
-                return false;
-            }
-            try {
-                const url = new URL(raw, document.baseURI);
-                return url.protocol === 'https:' && url.hostname === photoHost;
-            } catch {
-                return false;
-            }
-        });
-
-        const ancestorSummary = (element) => {
-            const result = [];
-            let current = element;
-            for (let depth = 0; current !== null && depth <= 6; depth += 1, current = current.parentElement) {
-                result.push({
-                    depth,
-                    tag: current.tagName,
-                    id: current.id || null,
-                    class: typeof current.className === 'string' && current.className !== '' ? current.className : null,
-                    data_plikid: current.getAttribute?.('data-plikid') ?? null,
-                    aria_current: current.getAttribute?.('aria-current') ?? null,
-                    data_selected: current.getAttribute?.('data-selected') ?? null,
-                    href: current.href ?? null,
-                });
-            }
-            return result;
-        };
-
-        const selectedSignals = (ancestors) => {
-            const signals = [];
-            for (const ancestor of ancestors) {
-                if (ancestor.aria_current !== null && ancestor.aria_current !== 'false') {
-                    signals.push(`aria-current:${ancestor.aria_current}`);
-                }
-                if (ancestor.data_selected === 'true' || ancestor.data_selected === '1') {
-                    signals.push(`data-selected:${ancestor.data_selected}`);
-                }
-                if (ancestor.class !== null && selectedClassRe.test(ancestor.class)) {
-                    signals.push(`class:${ancestor.class}`);
-                }
-            }
-            return [...new Set(signals)];
-        };
-
-        const photos = photoImages.map((image, index) => {
-            const src = new URL(image.currentSrc || image.src, document.baseURI).toString();
-            const rect = image.getBoundingClientRect();
-            const ancestors = ancestorSummary(image);
-            const closestAnchor = image.closest('a[href]');
-            const closestEntry = image.closest('[data-plikid]');
-            return {
-                index,
-                src,
-                id: image.id || null,
-                class: image.className || null,
-                alt: image.alt || null,
-                width: Math.round(rect.width),
-                height: Math.round(rect.height),
-                natural_width: image.naturalWidth || 0,
-                natural_height: image.naturalHeight || 0,
-                visible: rect.width > 0 && rect.height > 0,
-                closest_anchor_href: closestAnchor?.href ?? null,
-                closest_data_plikid: closestEntry?.getAttribute('data-plikid') ?? null,
-                outside_scan_entry: closestEntry === null,
-                selected_signals: selectedSignals(ancestors),
-                ancestors,
-            };
-        });
-
-        const scanEntries = [...document.querySelectorAll('[data-plikid]')].slice(0, 250).map((entry) => {
-            const images = [...entry.querySelectorAll('img')].map((image) => image.currentSrc || image.src || '').filter(Boolean);
-            const anchor = entry.matches?.('a[href]') ? entry : entry.querySelector('a[href]');
-            return {
-                tag: entry.tagName,
-                data_plikid: entry.getAttribute('data-plikid'),
-                id: entry.id || null,
-                class: entry.className || null,
-                href: anchor?.href ?? null,
-                text: (entry.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 160),
-                image_srcs: images.slice(0, 5),
-                outer_html: entry.outerHTML.slice(0, 800),
-            };
-        });
-
-        const attributeMatches = [];
-        for (const element of document.querySelectorAll('*')) {
-            for (const attribute of element.attributes ?? []) {
-                if (!attribute.value.includes(objectId)) {
-                    continue;
-                }
-                attributeMatches.push({
-                    tag: element.tagName,
-                    id: element.id || null,
-                    class: typeof element.className === 'string' && element.className !== '' ? element.className : null,
-                    attribute: attribute.name,
-                    value: attribute.value.slice(0, 500),
-                });
-                if (attributeMatches.length >= 50) {
-                    break;
-                }
-            }
-            if (attributeMatches.length >= 50) {
-                break;
-            }
-        }
-
-        const interestingInputs = [...document.querySelectorAll('input,button,select,textarea')]
-            .filter((element) => {
-                const name = element.getAttribute('name') ?? '';
-                const value = element.getAttribute('value') ?? '';
-                const id = element.id ?? '';
-                return /plik|skan|obiekt|object/i.test(`${name} ${id}`) || value.includes(objectId);
-            })
-            .slice(0, 100)
-            .map((element) => ({
-                tag: element.tagName,
-                type: element.getAttribute('type'),
-                name: element.getAttribute('name'),
-                id: element.id || null,
-                value: (element.getAttribute('value') ?? '').slice(0, 500),
-            }));
-
-        const inlineScriptMatches = [];
-        const needles = [objectId, '/skan/-/skan/', 'id-pliku', 'plikId', 'data-plikid', 'photos.szukajwarchiwach.gov.pl'];
-        for (const script of document.querySelectorAll('script:not([src])')) {
-            const text = script.textContent ?? '';
-            for (const needle of needles) {
-                let offset = text.indexOf(needle);
-                while (offset >= 0 && inlineScriptMatches.length < 40) {
-                    inlineScriptMatches.push({
-                        needle,
-                        snippet: text.slice(Math.max(0, offset - 220), Math.min(text.length, offset + needle.length + 380))
-                            .replace(/\s+/g, ' ')
-                            .trim(),
-                    });
-                    offset = text.indexOf(needle, offset + needle.length);
-                }
-                if (inlineScriptMatches.length >= 40) {
-                    break;
-                }
-            }
-            if (inlineScriptMatches.length >= 40) {
-                break;
-            }
-        }
-
-        const publicViewerLinks = [...document.querySelectorAll('a[href]')]
-            .map((anchor) => anchor.href)
-            .filter((href) => href.includes('/skan/-/skan/'))
-            .slice(0, 100);
-
-        const uniquePhotoSet = (items) => {
-            const bySrc = new Map();
-            for (const item of items) {
-                if (!bySrc.has(item.src)) {
-                    bySrc.set(item.src, item);
-                }
-            }
-            return [...bySrc.values()];
-        };
-
-        const byDataPlikid = uniquePhotoSet(photos.filter((photo) => photo.closest_data_plikid === objectId));
-        const byObjectAnchor = uniquePhotoSet(photos.filter((photo) => {
-            if (photo.closest_anchor_href === null) {
-                return false;
-            }
-            try {
-                return new URL(photo.closest_anchor_href, document.baseURI).pathname.endsWith(objectPath);
-            } catch {
-                return false;
-            }
-        }));
-        const bySelectedSignal = uniquePhotoSet(photos.filter((photo) => photo.selected_signals.length > 0));
-        const outsideEntries = uniquePhotoSet(photos.filter((photo) => photo.outside_scan_entry && photo.visible));
-
-        let bindingStrategy = null;
-        let selected = null;
-        for (const [strategy, matches] of [
-            ['data-plikid', byDataPlikid],
-            ['object-anchor', byObjectAnchor],
-            ['selected-state', bySelectedSignal],
-            ['single-photo-outside-scan-entry', outsideEntries],
-        ]) {
-            if (matches.length === 1) {
-                bindingStrategy = strategy;
-                selected = matches[0];
-                break;
-            }
-        }
-
-        let publicViewer = null;
-        let explicitPhoto = null;
-        let clickedTag = null;
-        if (selected !== null) {
-            const image = photoImages[selected.index];
-            const clickable = image.closest('a,button,[role="button"]') ?? image;
-            const container = image.closest('[data-plikid],li,article,figure,.item,.scan,.skan,.slide,.thumbnail,.thumb') ?? image.parentElement;
-            const anchors = container === null ? [] : [...container.querySelectorAll('a[href]')];
-            publicViewer = anchors.map((anchor) => anchor.href).find((href) => href.includes('/skan/-/skan/')) ?? null;
-            explicitPhoto = anchors.map((anchor) => anchor.href).find((href) => {
-                try {
-                    const url = new URL(href, document.baseURI);
-                    return url.protocol === 'https:' && url.hostname === photoHost;
-                } catch {
-                    return false;
-                }
-            }) ?? null;
-            clickable.scrollIntoView({ block: 'center', inline: 'center' });
-            clickable.click();
-            clickedTag = clickable.tagName;
-        }
-
-        return {
-            bound: selected !== null,
-            binding_strategy: bindingStrategy,
-            object_id: objectId,
-            preview_url: selected?.src ?? null,
-            public_viewer_url: publicViewer,
-            explicit_photo_url: explicitPhoto,
-            clicked_tag: clickedTag,
-            candidate_sets: {
-                by_data_plikid: byDataPlikid.map((photo) => photo.src),
-                by_object_anchor: byObjectAnchor.map((photo) => photo.src),
-                by_selected_signal: bySelectedSignal.map((photo) => photo.src),
-                outside_scan_entries: outsideEntries.map((photo) => photo.src),
-            },
-            photo_elements: photos,
-            scan_entries: scanEntries,
-            attribute_matches: attributeMatches,
-            interesting_inputs: interestingInputs,
-            inline_script_matches: inlineScriptMatches,
-            public_viewer_links: publicViewerLinks,
-        };
-    }, {
-        objectId,
-        photoHost: PHOTO_HOST,
-        selectedClassPattern: SELECTED_CLASS_RE.source,
-    });
-}
-
-async function captureExplicitBoundAsset(context, assetUrl, expectedIdentity, candidates) {
-    if (photoIdentity(assetUrl) !== expectedIdentity) {
-        return false;
-    }
-
-    debugEvent('scan:object-explicit-photo', { url: assetUrl });
-    try {
-        const response = await context.request.get(assetUrl, {
-            failOnStatusCode: false,
-            timeout: timeoutMs,
-        });
-        if (response.status() < 200 || response.status() >= 300) {
-            return false;
-        }
-        const headers = normalizeHeaders(response.headers());
-        const contentType = (headers['content-type']?.[0] ?? '').toLowerCase();
-        const body = Buffer.from(await response.body());
-        if (!looksLikeImage(contentType, body)) {
-            return false;
-        }
-        candidates.push({ status: response.status(), url: response.url(), headers, body });
-        return true;
-    } catch {
-        return false;
-    }
 }
 
 async function settlePage(page) {
-    await page.waitForLoadState('networkidle', { timeout: Math.min(timeoutMs, 10000) }).catch(() => null);
-    await page.waitForTimeout(2000).catch(() => null);
+    await page.waitForLoadState('networkidle', {
+        timeout: Math.min(timeoutMs, 10000),
+    }).catch(() => null);
+    await page.waitForTimeout(1000).catch(() => null);
 }
 
-async function waitForContext(context) {
-    await Promise.all(context.pages().map(async (observedPage) => {
-        await observedPage.waitForLoadState('domcontentloaded', {
-            timeout: Math.min(timeoutMs, 10000),
-        }).catch(() => null);
-        await settlePage(observedPage);
-    }));
+function canonicalUnitUrl(unitId) {
+    return `https://www.szukajwarchiwach.gov.pl/jednostka/-/jednostka/${unitId}`;
 }
 
-function selectDirectViewerCandidate(candidates, viewerStatus, viewerUrl) {
-    if (candidates.length === 0) {
-        fail(
-            `Scan viewer did not load a recognized image from ${PHOTO_HOST}. `
-            + `Viewer status=${viewerStatus} url=${viewerUrl}`,
-        );
-    }
-    candidates.sort(compareImageCandidates);
-    const selected = candidates[0];
-    debugEvent('scan:selected-candidate', { selected: summarizeCandidate(selected) });
-    return responsePayload(selected);
-}
-
-function responsePayload(candidate) {
-    return {
-        status: candidate.status,
-        url: candidate.url,
-        headers: candidate.headers,
-        body_base64: candidate.body.toString('base64'),
-    };
-}
-
-function objectIdFromUrl(url) {
+function unitIdFromUrl(url) {
     try {
-        const match = new URL(url).pathname.match(/\/obiekty\/([1-9]\d*)\/?$/);
+        const parsed = new URL(url);
+        if (parsed.protocol !== 'https:' || !PORTAL_HOSTS.has(parsed.hostname)) {
+            return null;
+        }
+        const match = parsed.pathname.match(/^\/(?:pl\/)?jednostka\/-\/jednostka\/([1-9]\d*)\/?$/);
         return match?.[1] ?? null;
     } catch {
         return null;
-    }
-}
-
-function identityFromPhotoUrl(url, photoHost) {
-    try {
-        const parsed = new URL(url);
-        if (parsed.protocol !== 'https:' || parsed.hostname !== photoHost) {
-            return null;
-        }
-        const name = parsed.pathname.split('/').filter(Boolean).at(-1) ?? '';
-        return name.match(/^([A-Za-z0-9._~-]+)_(?:max|mid|min|thumb)$/i)?.[1] ?? null;
-    } catch {
-        return null;
-    }
-}
-
-function photoIdentity(url) {
-    return identityFromPhotoUrl(url, PHOTO_HOST);
-}
-
-function isPublicViewerUrl(url) {
-    try {
-        const parsed = new URL(url);
-        return parsed.protocol === 'https:'
-            && ['szukajwarchiwach.gov.pl', 'www.szukajwarchiwach.gov.pl'].includes(parsed.hostname)
-            && /^\/skan\/-\/skan\/[A-Za-z0-9_-]+\/?$/.test(parsed.pathname);
-    } catch {
-        return false;
     }
 }
 
@@ -589,36 +556,13 @@ function isKnownPreviewAsset(url) {
     return rank > 0 && rank < 3;
 }
 
-async function capturePhotoCandidate(response, candidates) {
-    let url;
-    try {
-        url = new URL(response.url());
-    } catch {
-        return;
-    }
-
-    if (url.hostname !== PHOTO_HOST || response.status() < 200 || response.status() >= 300) {
-        return;
-    }
-
-    const headers = normalizeHeaders(response.headers());
-    const contentType = (headers['content-type']?.[0] ?? '').toLowerCase();
-    if (!contentType.startsWith('image/')) {
-        return;
-    }
-
-    let body;
-    try {
-        body = Buffer.from(await response.body());
-    } catch {
-        return;
-    }
-
-    if (!looksLikeImage(contentType, body)) {
-        return;
-    }
-
-    candidates.push({ status: response.status(), url: response.url(), headers, body });
+function responsePayload(candidate) {
+    return {
+        status: candidate.status,
+        url: candidate.url,
+        headers: candidate.headers,
+        body_base64: candidate.body.toString('base64'),
+    };
 }
 
 function observeDebugPage(page) {
@@ -627,9 +571,10 @@ function observeDebugPage(page) {
     }
 
     page.on('framenavigated', (frame) => {
-        if (frame === page.mainFrame()) {
-            debugEvent('browser:navigation', { url: frame.url() });
-        }
+        debugEvent('browser:navigation', {
+            frame: frame === page.mainFrame() ? 'main' : 'child',
+            url: frame.url(),
+        });
     });
 
     page.on('response', (response) => {
@@ -641,7 +586,11 @@ function observeDebugPage(page) {
         }
 
         const contentType = response.headers()['content-type'] ?? '';
-        if (hostname.endsWith('szukajwarchiwach.gov.pl') || contentType.toLowerCase().startsWith('image/')) {
+        if (
+            hostname.endsWith('szukajwarchiwach.gov.pl')
+            || hostname === PHOTO_HOST
+            || contentType.toLowerCase().startsWith('image/')
+        ) {
             debugEvent('browser:response', {
                 status: response.status(),
                 url: response.url(),
@@ -665,8 +614,17 @@ function looksLikeImage(contentType, body) {
         return true;
     }
     return (body.length >= 3 && body[0] === 0xFF && body[1] === 0xD8 && body[2] === 0xFF)
-        || (body.length >= 8 && body.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])))
-        || (body.length >= 12 && body.subarray(0, 4).toString('ascii') === 'RIFF' && body.subarray(8, 12).toString('ascii') === 'WEBP');
+        || (
+            body.length >= 8
+            && body.subarray(0, 8).equals(
+                Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]),
+            )
+        )
+        || (
+            body.length >= 12
+            && body.subarray(0, 4).toString('ascii') === 'RIFF'
+            && body.subarray(8, 12).toString('ascii') === 'WEBP'
+        );
 }
 
 function normalizeHeaders(headers) {
@@ -694,27 +652,48 @@ function debugEvent(type, details = {}) {
     if (debugDir === null) {
         return;
     }
-    debugState.events.push({ at: new Date().toISOString(), type, ...details });
+    debugState.events.push({
+        at: new Date().toISOString(),
+        type,
+        ...details,
+    });
 }
 
 function validateArguments() {
-    if (action !== 'scan-image') {
-        fail('Expected action scan-image.');
+    if (!['scan-image', 'unit-scan-image'].includes(action)) {
+        fail('Expected action scan-image or unit-scan-image.');
     }
+
     let parsed;
     try {
         parsed = new URL(targetUrl);
     } catch {
         fail('Expected a valid target URL.');
     }
-    if (
-        parsed.protocol !== 'https:'
-        || !['www.szukajwarchiwach.gov.pl', 'szukajwarchiwach.gov.pl'].includes(parsed.hostname)
-    ) {
+
+    if (parsed.protocol !== 'https:' || !PORTAL_HOSTS.has(parsed.hostname)) {
         fail('Target URL must use https on szukajwarchiwach.gov.pl.');
     }
+
     if (!Number.isInteger(timeoutMs) || timeoutMs < 1000) {
         fail('Timeout must be at least 1000 ms.');
+    }
+
+    if (action === 'scan-image') {
+        if (!/^\/skan\/-\/skan\/[A-Za-z0-9_-]+\/?$/.test(parsed.pathname)) {
+            fail('scan-image action requires a public /skan/-/skan/<token> viewer URL.');
+        }
+        return;
+    }
+
+    if (!Number.isInteger(scanNumber) || scanNumber < 1) {
+        fail('unit-scan-image action requires --scan-number=<positive integer>.');
+    }
+    if (expectedObjectId !== null && !/^[1-9]\d*$/.test(expectedObjectId)) {
+        fail('--expected-object-id must be a positive numeric Szukaj w Archiwach object id.');
+    }
+    if (unitIdFromUrl(targetUrl) === null) {
+        fail('unit-scan-image action requires a canonical Szukaj w Archiwach unit URL.');
     }
 }
 
