@@ -6,6 +6,8 @@
 
 It deliberately does not model MyTree `Source`, `Mention`, `Claim`, `Person` or interpretation semantics.
 
+Provider-specific URL, HTML, browser and download behavior must not leak into application or MyTree domain code.
+
 ## Dependency direction
 
 ```text
@@ -18,7 +20,7 @@ Provider / Infrastructure
 CLI or Laravel composition root
 ```
 
-Provider-specific URL, HTML and download behavior must not leak into application or MyTree domain code.
+A runtime may use provider-specific infrastructure such as Playwright/Chromium without putting browser types into domain/public contracts.
 
 ## Main flow
 
@@ -40,7 +42,7 @@ DownloadScan
 DownloadedScan
 ```
 
-When a provider exposes catalog enumeration:
+Optional catalog discovery is separate:
 
 ```text
 ScanResourceReference
@@ -52,31 +54,25 @@ ScanCatalog
 AvailableScan[]
 ```
 
-Discovery and resolution are separate on purpose. A provider can expose files that cannot be mapped safely to a requested act. Such files remain visible in the catalog instead of being guessed away.
+Discovery and resolution are separate so providers can expose opaque scans without guessing semantic locators.
 
 ## Extension contracts
 
 ### `ScanProviderInterface`
 
-Every scan provider exposes a stable key, precise resource matching, scan resolution and raw asset download.
-
-The provider key is an open string identifier rather than an enum because additional providers are expected.
-
-A provider may be introduced incrementally. During a milestone step that implements catalog discovery or resolution before download, unsupported operations remain explicit rather than guessing or silently falling back.
+Every provider exposes a stable provider key, precise resource matching, resolution and download behavior.
 
 ### `ScanCatalogDiscoveryInterface`
 
-Optional capability for providers that can enumerate scans inside a remote resource. Providers that cannot meaningfully list a catalog are not forced to implement it.
+Optional capability for providers that can enumerate scans inside a remote resource.
 
 ### `ScanProviderRegistry`
 
-Routing is provider-driven. There is no central switch over known domains. If zero providers match, routing fails explicitly. If more than one provider matches, routing fails as ambiguous instead of silently choosing by registration order.
+Routing is provider-driven. Zero matches fail explicitly. Multiple matches are ambiguous rather than resolved by registration order.
 
-The standalone CLI uses `DefaultScanProviderRegistryFactory` as a small composition root. The factory registers the completed Genealodzy Skanoteka and Szukaj w Archiwach adapters in the normal registry; it does not duplicate routing rules. Future framework composition roots may register the same provider services independently through dependency injection.
+`DefaultScanProviderRegistryFactory` is the standalone composition root used by the CLI. It registers the completed Genealodzy Skanoteka and Szukaj w Archiwach providers without introducing caller-side provider switches.
 
-A standalone tool may depend on additional infrastructure without making that infrastructure part of the domain contract. In particular, a provider runtime may compose a browser-session transport implemented with Playwright/Chromium while `ScanProviderInterface`, `ScanCatalogDiscoveryInterface` and the serialized domain shapes remain free of browser-specific types.
-
-## Genealodzy Skanoteka provider
+## Genealodzy Skanoteka
 
 Routing target:
 
@@ -84,92 +80,115 @@ Routing target:
 https://metryki.genealodzy.pl/...
 ```
 
-Observed Skanoteka collection pages expose scan viewer links through URLs containing the `plik` query parameter. The provider parses these links into `AvailableScan` values and derives only strict filename locators:
+Observed collection pages expose viewer links with the `plik` query parameter. The provider derives only strict locators:
 
 ```text
-017.jpg    -> act 17
-12-21.jpg  -> act range 12..21
-anything else -> opaque locator
+017.jpg    → act 17
+12-21.jpg  → act range 12..21
+anything else → opaque locator
 ```
 
-`ActNumberMatcher` never performs fuzzy filename matching.
+Download opens the resolved viewer, resolves a supported image/download URL and validates the final response as an image.
 
-For download, the provider opens the resolved viewer page, resolves the best matching image/download link and validates that the downloaded response is an image before storing it.
+## Szukaj w Archiwach — completed P2 capability
 
-## Szukaj w Archiwach provider — completed P2 package capability
-
-Current supported resource family:
+Supported resource families:
 
 ```text
 https://www.szukajwarchiwach.gov.pl/jednostka/-/jednostka/<unit-id>
 https://www.szukajwarchiwach.gov.pl/jednostka/-/jednostka/<unit-id>#scan<N>
+https://www.szukajwarchiwach.gov.pl/skan/-/skan/<opaque-token>
 ```
 
-The provider uses public Szukaj w Archiwach HTML/routes as an undocumented web integration. The catalog parser preserves the numeric provider unit ID, unit metadata/raw fields, declared digital scan cardinality, ordered scan ordinals and numeric `data-plikid` object locators. Pagination is followed sequentially and the final enumeration must equal the declared `Skany (N)` / `Scans (N)` value before the result can be cached as successful discovery.
+### Catalog and ordinal identity
 
-Each discovered entry derives its exact public object viewer from the discovered identifiers:
+Catalog discovery preserves:
+
+- numeric provider unit ID,
+- provider-published unit metadata/raw fields,
+- complete ordered scan enumeration,
+- one-based `scan_ordinal`,
+- numeric provider object/file locator from `data-plikid`,
+- per-page/discovery hashes and scan-count provenance.
+
+`#scan<N>` and `ScanLocatorHints::scanNumberRaw` are ordinal hints, not asset URLs. Resolution verifies the ordinal against discovery and preserves the exact object/file locator. Missing, malformed, conflicting or out-of-range hints remain explicit safe outcomes.
+
+A discovered scan carries a deterministic public object-viewer locator:
 
 ```text
 /jednostka/-/jednostka/<unit-id>/obiekty/<object-id>
 ```
 
-Ordinal resolution treats `#scan<N>` as a browser-side locator hint rather than an asset URL. The provider parses a positive ordinal from the fragment, or from explicit `ScanLocatorHints::scanNumberRaw` when no fragment is present, and matches it against the catalog entry's explicit `scan_ordinal` metadata. The exact provider object/file locator comes from the discovered `AvailableScan::remoteId`; it is never inferred from the ordinal itself.
+That locator remains useful provenance even though the normal browser download path does not need to navigate through it.
 
-Conflicting raw hints, missing/out-of-range ordinals and non-unique catalog matches remain explicit `unresolved` / `ambiguous` / `unsupported` outcomes. The original `ResolveScanRequest`, catalog candidates and catalog provenance remain attached to the result so disagreement between supplied locator data and current discovery is diagnosable.
+### Browser transport ownership
 
-For download, the provider opens the exact object viewer and extracts one supported public scan-viewer link:
+Current live Szukaj w Archiwach unit/catalog HTML cannot be treated as complete merely because Native HTTP returns `200`. Live validation observed successful-looking partial catalogs.
+
+Therefore the standalone CLI composes `BrowserSessionClientInterface` using `PlaywrightBrowserSessionClient` and sets browser-page preference for current SZA unit/catalog discovery.
+
+Native HTTP remains available for providers and operations where it is sufficient. Browser-specific objects stay behind the provider/infrastructure boundary.
+
+### Known unit + ordinal download
+
+The production standalone flow follows the provider's visible UI:
+
+```text
+ResolvedScan(unit id + ordinal + object id)
+        ↓
+open canonical unit page in Chromium
+        ↓
+select/show 200 entries when available
+        ↓
+select exact ordinal thumbnail
+        ↓
+verify visible ordinal + data-plikid == resolved object id
+        ↓
+open provider photoslider iframe
+        ↓
+wait for photoslider application to render
+        ↓
+activate "Link do scanu" / tolerated "Link do skanu"
+        ↓
+read provider-emitted /skan/-/skan/<opaque-token>
+        ↓
+open that official public viewer
+        ↓
+capture recognized full-resolution image response from photos.szukajwarchiwach.gov.pl
+        ↓
+ScanAssetStorageInterface
+```
+
+The worker never derives a photo URL by replacing a suffix or manufacturing `<token>_max`. Known preview variants such as `_mid` are not accepted as the final original/full-resolution result.
+
+The browser flow verifies object identity before download, so ordinal selection cannot silently drift to another scan.
+
+### Direct public viewer download
+
+An official public locator:
 
 ```text
 /skan/-/skan/<opaque-token>
 ```
 
-The token is treated as opaque provider data. Live testing on 2026-09-22 established that this route is an HTML viewer locator rather than the raw image asset. The adapter deliberately ignores undocumented `/o/pliki-api/...` routes as public contracts. Missing or non-unique public viewer links fail explicitly.
+is modeled as an HTML viewer locator, not a raw image URL. `ResolveScan` can resolve it directly with strategy `public_scan_viewer_url`. `fetchScanImage()` opens the viewer and captures the actual image subresource.
 
-The standalone `NativeHttpClient` remains the first transport for ordinary requests. When a Szukaj w Archiwach page is explicitly recognized as an Imperva/Incapsula soft block, the provider-specific fetcher may fall back to `BrowserSessionClientInterface::fetchPage()`. When a public `/skan/...` viewer returns HTML instead of image bytes, the downloader may use `BrowserSessionClientInterface::fetchScanImage()` to observe the actual image response loaded by the viewer. For object-viewer fallback, the browser runtime may first observe a lower-resolution preview; it should continue through provider-rendered navigation/interaction and prefer the highest-quality image response actually observed, without synthesizing undocumented photo URLs.
+### Optional non-browser fallback
 
-The standalone implementation of that internal capability is `PlaywrightBrowserSessionClient`, backed by a small Node/Playwright worker and Chromium. Browser-specific objects do not enter `ScanProviderInterface`, application use cases or serialized domain contracts. A successful PoC observed the real JPEG as a separate subresource from `photos.szukajwarchiwach.gov.pl`; the observed URL shape remains compatibility evidence, not a stable derivation contract.
+Provider code retains a fixture-backed object-viewer parser for environments that instantiate the provider without browser transport. It may use a public `/skan/-/skan/<token>` link explicitly exposed by static object-viewer HTML. This is a bounded compatibility path, not the normal current standalone CLI path and not an undocumented internal API contract.
 
-The standalone CLI exposes the provider only through the existing `DiscoverScans`, `ResolveScan` and `DownloadScan` application services. No parallel provider-specific orchestration API exists. `ResolveScan` can resolve an exact public `/skan/...` viewer locator with strategy `public_scan_viewer_url`. The final standalone composition root must select/use browser-aware infrastructure when required so `DownloadScan` can complete the supported live flow. Legacy `szukajwarchiwach.pl` URLs are not claimed or mechanically rewritten by provider routing.
+### Provenance
 
-See [SZUKAJWARCHIWACH.md](SZUKAJWARCHIWACH.md).
+For known-unit resolution:
 
-## Determinism
+- `resource_url` preserves the original input locator,
+- catalog/resolution provenance retains unit ID, ordinal, object ID, metadata and discovery hashes,
+- `viewer_url` remains the deterministic per-object `/obiekty/<object-id>` locator selected by resolution,
+- `download_url` is the effective raw image URL returned by the browser flow.
 
-Pure parser/resolution components are deterministic for the same input. Network retrieval timestamps and remote content are explicit I/O inputs and are preserved in provenance.
+The intermediate `/skan/-/skan/<token>` obtained inside the unit browser session is a transport locator and is not separately serialized by `mytree.downloaded-scan.v1`. Direct public-viewer requests naturally use `/skan/...` as `viewer_url` because it is their resolved viewer locator.
 
-Normal CI uses fixture HTML and fake responses. Live third-party availability is not required.
-
-## Provenance and serialization
-
-A catalog records:
-
-```text
-provider key/version
-resource URL
-retrieval timestamp
-SHA-256 of provider response/discovery corpus
-discovery strategy
-```
-
-Provider-specific catalog provenance may add stable remote identifiers, page hashes, metadata and cardinality as long as external raw values remain preserved and provider semantics stay inside the adapter.
-
-A scan resolution additionally preserves the full request, candidates, strategy/status, selected catalog entry when resolved and catalog provenance. A downloaded scan additionally records:
-
-```text
-viewer URL
-download URL
-resolution strategy
-asset MIME type
-asset size
-asset SHA-256
-storage path
-retrieval timestamp
-catalog provenance
-```
-
-Original remote filenames and request hints are preserved when the provider exposes them; normalization does not replace raw values. A provider-generated storage filename does not claim to be the remote filename when the remote service did not publish one.
-
-The completed P2 provider uses the existing versioned shapes without an incompatible change:
+The existing public schemas remain unchanged:
 
 ```text
 mytree.scan-catalog.v1
@@ -177,17 +196,28 @@ mytree.scan-resolution.v1
 mytree.downloaded-scan.v1
 ```
 
-Unit/ordinal/object identity and rights/access data remain represented through the existing scan metadata, request/resolution objects, URLs and provider provenance.
+## Determinism and tests
 
-## Non-goals
+Parser/resolution components are deterministic for the same input. Network timestamps and remote content are explicit I/O inputs preserved in provenance.
+
+Normal CI is offline. It uses fixture HTML and fake HTTP/browser clients; live third-party availability is never required.
+
+GitHub Actions additionally validates Composer metadata, Node worker syntax/imports and the PHPUnit suite.
+
+## Source identity boundary
+
+`DownloadedScan` is a retrieved digital asset result. It does not establish historical source identity. Multiple provider assets may later be attached to one MyTree `Source` only through the normal application/source-identity boundary.
+
+## Deferred / non-goals
 
 - MyTree source identity reconciliation
 - OCR or transcription
 - fuzzy act matching
 - person identity resolution
-- automatic selection of a remote book from only parish/year/type
-- mechanical migration of legacy Szukaj w Archiwach URLs
-- optimized whole-unit/batch Szukaj w Archiwach download
-- Laravel/Eloquent/Filament integration in the core package
+- arbitrary archival signature → current SZA unit discovery (#161)
+- optimized whole-unit/batch SZA acquisition (#162)
+- migration to a future supported official API before such a contract exists (#163)
+- mechanical migration of legacy `szukajwarchiwach.pl` locators
+- Laravel/Eloquent/Filament integration in this core package
 
-Collection/book discovery by parish/year/type may be added later as a separate capability after provider semantics are verified. Laravel/MyTree application registration remains an M7 concern.
+M7 integrates/configures this already browser-capable package. It must not reimplement Szukaj w Archiwach HTML/photoslider/Playwright behavior in Laravel.

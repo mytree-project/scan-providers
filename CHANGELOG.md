@@ -2,13 +2,15 @@
 
 ## Unreleased
 
-- Add Playwright/Chromium browser-session transport for live Szukaj w Archiwach fallback: protected HTML pages can be retrieved through an ephemeral browser context and scan viewers can yield the actual image subresource without exposing browser types in public/domain contracts.
-
-- Add initial `szukajwarchiwach` known-unit catalog discovery with metadata, digital scan cardinality, ordered provider object locators, pagination validation, bounded retry/pacing, in-memory validated-result caching and offline fixtures.
-- Add deterministic Szukaj w Archiwach scan-ordinal resolution from `#scan<N>` or explicit `scanNumberRaw`, with safe unresolved/ambiguous/unsupported outcomes and preserved catalog provenance.
-- Add Szukaj w Archiwach per-object viewer resolution and public `/skan/-/skan/<opaque-token>` viewer-locator handling with MIME validation, explicit browser-transport-required failure when standalone HTTP receives viewer HTML, bounded retries and preserved catalog provenance.
-- Register the completed Szukaj w Archiwach provider in the standalone CLI/default registry, add provider-neutral discovery output and end-to-end offline registry/serialization coverage while retaining the existing v1 schemas.
-- Accept official Szukaj w Archiwach `/skan/-/skan/<opaque-token>` links as exact resolvable viewer locators, document the browser-session requirement for current live image acquisition, and tolerate current `_Jednostka_cur` catalog pagination when the historical `Skany (N)` label is absent.
+- Complete the `szukajwarchiwach` P2 provider for known current unit URLs and official public scan-viewer locators.
+- Add browser-first Szukaj w Archiwach unit/catalog retrieval in the standalone runtime because successful-looking Native HTTP responses can expose incomplete catalogs.
+- Add deterministic ordinal resolution from `#scan<N>` or explicit `scanNumberRaw`, preserving unit/object identity, safe unresolved/ambiguous/unsupported outcomes and catalog provenance.
+- Add Playwright/Chromium infrastructure behind browser-agnostic provider/domain contracts. The standalone CLI provisions this capability; Laravel/MyTree integration is deferred to M7 rather than reimplementing provider-specific browser logic.
+- Add known-unit + ordinal browser acquisition through the portal's real UI flow: 200-entry gallery selection, object-id verification, photoslider iframe, provider-emitted `Link do scanu` public viewer, and observed original/full-resolution image response.
+- Accept official `/skan/-/skan/<opaque-token>` URLs as exact HTML viewer locators and capture the actual image subresource through Chromium without deriving undocumented `<token>_max` URLs.
+- Add JSON-only optional browser diagnostics; active workers no longer record WebM/video.
+- Preserve existing `mytree.scan-catalog.v1`, `mytree.scan-resolution.v1` and `mytree.downloaded-scan.v1` contracts while retaining provider catalog/resolution provenance and effective raw download URLs.
+- Keep arbitrary archival-signature discovery, optimized whole-unit acquisition and future official-API migration as separate deferred capabilities.
 
 ## 0.1.0
 

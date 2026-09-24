@@ -2,7 +2,7 @@
 
 Framework-independent PHP package for discovering, resolving and downloading genealogical scan assets from external scan-hosting services.
 
-The package is designed to remain reusable outside Laravel. MyTree/Laravel integration should be implemented through adapters and the Laravel composition root rather than by introducing framework dependencies into this core package.
+The package is reusable outside Laravel. MyTree/Laravel integration belongs in adapters and the application composition root; provider-specific HTML, URL and browser behavior stays inside this package.
 
 ## Providers
 
@@ -15,26 +15,7 @@ genealodzy-skanoteka
 host: metryki.genealodzy.pl
 ```
 
-It supports the workflow used by Geneteka links where an index record points to a Skanoteka catalog rather than directly to one image:
-
-```text
-catalog/resource URL
-+ record/act number
-        ↓
-discover available scan links
-        ↓
-parse exact/range act locators from scan filenames
-        ↓
-resolve exactly one / ambiguous / unresolved
-        ↓
-open the scan viewer
-        ↓
-resolve the image/download URL
-        ↓
-download and store the raw image
-```
-
-The provider does **not** use OCR or fuzzy identity matching. It does not claim that a scan belongs to an act when the provider's catalog does not expose a supported deterministic locator.
+It supports the deterministic catalog → act locator → viewer → image flow used by Geneteka/Skanoteka links. Exact filenames such as `17.jpg` and strict ranges such as `12-21.jpg` can resolve act numbers; opaque filenames remain discoverable without guessed act semantics.
 
 ### Szukaj w Archiwach
 
@@ -45,19 +26,47 @@ szukajwarchiwach
 host: www.szukajwarchiwach.gov.pl
 ```
 
-The P2 package implementation contains fixture-backed catalog discovery for known current unit URLs, deterministic ordinal resolution from `#scan<N>` deep links or explicit positive `scanNumberRaw` hints, per-object viewer resolution, default registry/CLI exposure, and support for official `/skan/-/skan/<opaque-token>` **viewer locators**.
+P2 is implemented for known current unit URLs and official public scan-viewer URLs. Supported public locator families include:
 
-Live compatibility testing established three transport facts:
+```text
+https://www.szukajwarchiwach.gov.pl/jednostka/-/jednostka/<UNIT_ID>
+https://www.szukajwarchiwach.gov.pl/jednostka/-/jednostka/<UNIT_ID>#scan<N>
+https://www.szukajwarchiwach.gov.pl/skan/-/skan/<OPAQUE_TOKEN>
+```
 
-- current unit/catalog requests from a simple non-browser HTTP client can be intercepted by the portal's Imperva/Incapsula layer,
-- even a successful-looking Native HTTP catalog response can expose only a partial catalog, so HTTP 200 alone is not sufficient evidence of completeness,
-- a Playwright/Chromium browser session can enumerate the browser-visible unit catalog and can load the real JPEG used by a public `/skan/-/skan/<token>` viewer as a separate subresource from `photos.szukajwarchiwach.gov.pl`.
+The implementation provides:
 
-The public `/skan/-/skan/<token>` URL is therefore modeled as an HTML viewer locator, not as the raw image asset. `resolve` can identify that viewer deterministically without catalog discovery. The standalone runtime includes Playwright/Chromium infrastructure while browser-specific types remain outside the public/domain contracts.
+- browser-backed catalog discovery for known current units,
+- deterministic one-based ordinal resolution from `#scan<N>` or `--scan-number=<N>`,
+- preservation of provider unit/object identity and discovery provenance,
+- direct support for official `/skan/-/skan/<token>` HTML viewer locators,
+- browser UI acquisition for known unit + ordinal,
+- raw/full-resolution image download through the existing `DownloadScan` boundary,
+- registry/CLI exposure and the existing v1 serialized contracts.
 
-For current Szukaj w Archiwach unit/catalog discovery, the standalone CLI uses browser-rendered pages when its normal browser capability is configured. This is deliberate rather than a debug-only fallback: the 2026-09-23 live diagnostic run for unit `11959850` rendered seven 20-entry pages plus a final 14-entry page, totaling the 154 scans visible in the portal UI, while earlier Native HTTP runs had produced partial 60/40-entry catalogs. The active browser page worker now asks the portal for its `delta=200` catalog view first, so units with up to 200 scans can normally be enumerated in one browser render when the portal honors that setting; ordinary pagination remains available when it does not.
+### Why Szukaj w Archiwach uses Chromium
 
-The adapter does not use undocumented `/o/pliki-api/...` endpoints as its public contract. For unit discovery it preserves the numeric unit ID, ordered scan ordinals, provider object/file locators and unit metadata/provenance. When `Skany (N)` / `Scans (N)` is present it is verified against complete enumeration; when current HTML omits that label, the adapter follows the official `_Jednostka_cur` pagination and records the enumerated cardinality explicitly. Zero-scan and paginated units are supported without silently treating unrecognized markup as an empty catalog. Legacy `szukajwarchiwach.pl` URLs are retained as external provenance/locator values and are not mechanically rewritten into current service URLs.
+Live validation established that Native HTTP is not sufficient as the normal correctness boundary for current unit catalogs: requests may be soft-blocked, and even successful-looking HTTP responses may expose only a partial scan list.
+
+The standalone CLI therefore uses the bundled Playwright/Chromium page capability for current Szukaj w Archiwach unit/catalog discovery. The browser worker prefers the portal's 200-entry catalog view and follows pagination when required.
+
+For known unit + ordinal, the normal live browser flow follows the portal UI rather than deriving undocumented photo URLs:
+
+```text
+unit page
+  → request/show 200 entries
+  → select the exact ordinal thumbnail
+  → verify data-plikid against catalog resolution
+  → open photoslider iframe
+  → use the portal's "Link do scanu" / "Link do skanu" control
+  → read the provider-emitted /skan/-/skan/<token> viewer locator
+  → open that viewer
+  → capture the actual full-resolution image response from photos.szukajwarchiwach.gov.pl
+```
+
+The implementation never manufactures a `_max` URL from an observed token. The observed `photos.szukajwarchiwach.gov.pl/<token>_max` shape is compatibility evidence, not a public API contract.
+
+The official `/skan/-/skan/<token>` locator is an HTML viewer, not the raw image URL.
 
 See [docs/SZUKAJWARCHIWACH.md](docs/SZUKAJWARCHIWACH.md).
 
@@ -65,51 +74,35 @@ See [docs/SZUKAJWARCHIWACH.md](docs/SZUKAJWARCHIWACH.md).
 
 - PHP 8.2+
 - `allow_url_fopen=1` for the built-in standalone HTTP client
+- Node.js 20+ for the current bundled browser runtime
 - no Laravel dependency
-- browser-agnostic PHP/domain contracts; provider runtime may include Playwright/Chromium infrastructure when required by a live service
 
-Install PHP dependencies:
+Install dependencies and Chromium:
 
 ```bash
 composer install
-```
-
-Install the standalone browser runtime used by current live Szukaj w Archiwach flows:
-
-```bash
 npm ci
 npx playwright install chromium
 ```
 
-The Node dependency is pinned in `package-lock.json`. Current Szukaj w Archiwach unit/catalog operations use Chromium through the package infrastructure; normal HTTP-only provider operations continue to use `NativeHttpClient`.
+Browser-specific Playwright objects do not enter `ScanProviderInterface`, `ScanCatalogDiscoveryInterface`, application services or serialized domain results.
 
 ## CLI
 
-The standalone CLI registers both completed provider adapters through the same `ScanProviderRegistry` extension boundary used by the application services.
-
-List registered providers:
+List providers:
 
 ```bash
 php bin/mytree-scan providers
 ```
 
-Expected provider keys include:
+Expected keys include:
 
 ```text
 genealodzy-skanoteka
 szukajwarchiwach
 ```
 
-### Discover available scans
-
-Genealodzy Skanoteka example:
-
-```bash
-php bin/mytree-scan discover \
-  --url="https://metryki.genealodzy.pl/metryki.php?op=kt&ar=10&zs=2596d&sy=501&kt=12"
-```
-
-Szukaj w Archiwach example:
+### Discover
 
 ```bash
 php bin/mytree-scan discover \
@@ -122,35 +115,16 @@ JSON output:
 php bin/mytree-scan discover --url="..." --format=json
 ```
 
-The table format is provider-neutral and shows the provider remote ID, label, optional remote filename, primary locator and viewer URL. Discovery remains a first-class capability and does not guess historical source identity.
+### Resolve an ordinal
 
-### Resolve a scan
-
-Genealodzy Skanoteka resolves a strict act-number locator:
-
-```bash
-php bin/mytree-scan resolve \
-  --url="https://metryki.genealodzy.pl/metryki.php?op=kt&ar=10&zs=2596d&sy=501&kt=12" \
-  --record-number=<ACT_NUMBER>
-```
-
-Supported deterministic filename forms in v0.1 are:
-
-```text
-17.jpg       -> act 17
-12-21.jpg    -> acts 12 through 21
-```
-
-Opaque filenames such as `SkU-1.jpg` remain discoverable but are not guessed as act-number mappings.
-
-Szukaj w Archiwach resolves an ordinal either from the current deep link itself:
+From a deep link:
 
 ```bash
 php bin/mytree-scan resolve \
   --url="https://www.szukajwarchiwach.gov.pl/jednostka/-/jednostka/<UNIT_ID>#scan42"
 ```
 
-or from an explicit provider-neutral scan-number hint:
+Or from an explicit scan-number hint:
 
 ```bash
 php bin/mytree-scan resolve \
@@ -158,14 +132,14 @@ php bin/mytree-scan resolve \
   --scan-number=42
 ```
 
-An official public **Link do skanu** viewer can also be resolved directly:
+An official public viewer locator is also directly resolvable:
 
 ```bash
 php bin/mytree-scan resolve \
   --url="https://www.szukajwarchiwach.gov.pl/skan/-/skan/<OPAQUE_TOKEN>"
 ```
 
-Resolution statuses are explicit:
+Resolution statuses remain explicit:
 
 ```text
 resolved
@@ -174,26 +148,18 @@ unresolved
 unsupported
 ```
 
-### Download a resolved scan
+### Download
 
-Genealodzy Skanoteka example:
-
-```bash
-php bin/mytree-scan download \
-  --url="https://metryki.genealodzy.pl/metryki.php?op=kt&ar=10&zs=2596d&sy=501&kt=12" \
-  --record-number=<ACT_NUMBER> \
-  --output=var/scans
-```
-
-The Szukaj w Archiwach command surface remains the same:
+Known unit + ordinal:
 
 ```bash
 php bin/mytree-scan download \
-  --url="https://www.szukajwarchiwach.gov.pl/jednostka/-/jednostka/<UNIT_ID>#scan42" \
+  --url="https://www.szukajwarchiwach.gov.pl/jednostka/-/jednostka/<UNIT_ID>" \
+  --scan-number=42 \
   --output=var/scans
 ```
 
-and accepts an official viewer locator:
+Direct public viewer:
 
 ```bash
 php bin/mytree-scan download \
@@ -201,13 +167,17 @@ php bin/mytree-scan download \
   --output=var/scans
 ```
 
-For the current live service, the standalone composition uses Playwright/Chromium for Szukaj w Archiwach page acquisition where browser-visible state is required, including unit/catalog discovery. HTML scan viewers resolve the actual JPEG response loaded from `photos.szukajwarchiwach.gov.pl`. MyTree/M7 will integrate this package capability rather than implement it separately.
+Optional browser diagnostics:
 
-Optional `--browser-debug-dir=<path>` writes JSON browser diagnostic manifests without changing the selected SZA page transport. Active workers do not record WebM/video. See [docs/SZUKAJWARCHIWACH_BROWSER_DEBUG.md](docs/SZUKAJWARCHIWACH_BROWSER_DEBUG.md).
+```bash
+--browser-debug-dir=var/szukajwarchiwach-browser-debug
+```
+
+Diagnostics write JSON manifests only and do not change the normal SZA transport path. Active workers do not record video/WebM. See [docs/SZUKAJWARCHIWACH_BROWSER_DEBUG.md](docs/SZUKAJWARCHIWACH_BROWSER_DEBUG.md).
 
 ## Public architecture
 
-The intentionally small extension API is built around:
+The extension API remains deliberately small:
 
 ```text
 ScanProviderInterface
@@ -219,21 +189,15 @@ ResolveScan
 DownloadScan
 ```
 
-A new scan service should normally be added by implementing `ScanProviderInterface` and registering the provider. If the service can enumerate scans for a remote resource, it can additionally implement `ScanCatalogDiscoveryInterface`.
-
-`DefaultScanProviderRegistryFactory` is the standalone composition root used by the CLI. It only assembles completed provider implementations; routing decisions remain inside `ScanProviderRegistry` and each provider's `supports()` method rather than caller-side switches.
-
-Provider-specific HTTP/HTML/URL rules must stay inside the provider implementation.
+`DefaultScanProviderRegistryFactory` is the standalone composition root used by the CLI. Provider routing stays inside `ScanProviderRegistry` and provider `supports()` implementations rather than caller-side domain switches.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/LARAVEL_INTEGRATION.md](docs/LARAVEL_INTEGRATION.md).
 
 ## Provenance and source identity
 
-This package downloads assets; it does not decide historical source identity.
+This package retrieves digital assets; it does not establish MyTree historical `Source` identity.
 
-A downloaded scan is not automatically a MyTree `Source`. The Laravel/MyTree integration layer may attach it as a `SourceAsset` after preserving its independent provider URL, retrieval metadata and hash. Multiple assets from different providers can represent the same underlying source and must retain independent provenance.
-
-Serialized results use the existing explicit schema identifiers:
+Serialized contracts remain:
 
 ```text
 mytree.scan-catalog.v1
@@ -241,24 +205,26 @@ mytree.scan-resolution.v1
 mytree.downloaded-scan.v1
 ```
 
-The Szukaj w Archiwach P2 integration does not require a schema-version change. Provider-specific unit/object/ordinal metadata remains in the existing scan/provenance structures, while the resolution request preserves the original locator input.
+For known-unit Szukaj w Archiwach resolution, catalog/resolution provenance retains unit ID, one-based ordinal, provider object/file locator, input locator and catalog metadata/hashes. `DownloadedScan.viewer_url` remains the deterministic per-object viewer locator selected by catalog resolution, while `download_url` is the effective raw image response URL.
 
-## Tests
+The public `/skan/-/skan/<token>` obtained inside the unit browser flow is an intermediate provider transport locator. It is not separately serialized by `mytree.downloaded-scan.v1`. Direct `/skan/...` requests naturally use that public viewer as `viewer_url` because it is the input/resolved viewer itself.
+
+## Tests and quality gates
 
 ```bash
 composer test
 ```
 
-Normal tests use local fixtures and fake HTTP/browser responses. CI does not depend on the availability or current HTML of third-party genealogy portals. Package-level integration coverage includes registry routing and the complete Szukaj w Archiwach discover → resolve → download → serialization flow.
+Normal tests use local fixtures and fake HTTP/browser responses. GitHub Actions also validates `composer.json`, Node worker syntax/imports and the full PHPUnit suite. Live Szukaj w Archiwach availability is not a normal CI dependency.
 
-## Current limitations
+Coverage includes multi-scan, zero-scan and paginated catalogs; exact/out-of-range/malformed ordinal behavior; browser page selection; viewer/download failure behavior; registry/CLI/serialization; and Genealodzy Skanoteka non-regression.
 
-- Current Szukaj w Archiwach unit/catalog retrieval depends on the bundled Playwright/Chromium runtime because successful-looking Native HTTP responses have been observed to expose incomplete catalogs.
-- Szukaj w Archiwach `/skan/-/skan/<token>` is an HTML viewer locator in the observed live flow, not a raw JPEG URL. Direct-viewer live download is confirmed. Known-unit + ordinal live download is also transport-functional; final P2 validation requires confirming that the browser flow selects the original/full-resolution asset rather than stopping at an object-viewer preview such as `_mid`.
-- Szukaj w Archiwach starts from a known current numeric-unit URL; arbitrary archival-signature-to-unit search is not implemented.
-- Legacy `szukajwarchiwach.pl` URLs are not mechanically migrated by the scan provider.
-- Szukaj w Archiwach uses per-object acquisition; optimized whole-unit/batch download is intentionally deferred.
-- Genealodzy Skanoteka act resolution supports positive numeric act numbers and strict exact/range filename conventions only.
-- The package starts from a known scan-resource/catalog URL. Discovering the correct remote collection solely from parish/year/type is intentionally outside the initial API and can be introduced later as a segregated capability.
-- Provider HTML changes may require parser updates; provenance hashes, browser diagnostics and fixture tests make such changes diagnosable.
-- Laravel/MyTree application registration is intentionally not part of P2; that integration belongs to M7. Browser transport required by a provider is still part of standalone provider/tool operation and is not deferred to Laravel.
+## Current limitations / deferred capabilities
+
+- Szukaj w Archiwach starts from a known current numeric unit URL or an official public scan-viewer URL.
+- Legacy `szukajwarchiwach.pl` URLs are preserved as locator/provenance values and are not mechanically rewritten.
+- Arbitrary archival-signature → current-unit discovery is deferred (#161).
+- Optimized whole-unit/batch acquisition is deferred (#162); P2 downloads individual resolved scans.
+- Migration to a future supported official API is deferred until such a contract exists (#163).
+- Provider HTML/UI changes may require adapter updates; fixture tests and optional browser JSON diagnostics are the compatibility boundary.
+- Laravel/MyTree application registration and Source Acquisition handoff belong to M7; MyTree must reuse this package's browser-capable provider rather than reimplement provider-specific Playwright logic.
