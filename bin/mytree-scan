@@ -52,7 +52,7 @@ Common:
   --timeout=60
   --node=node
   --browser-worker=<path>
-  --browser-debug-dir=<path>  Record Playwright sessions and diagnostic manifests.
+  --browser-debug-dir=<path>  Write Playwright diagnostic JSON manifests.
   --help
 TXT;
     fwrite($exit === 0 ? STDOUT : STDERR, $text . PHP_EOL);
@@ -120,7 +120,7 @@ if ($browserDebugEnabled) {
     fwrite(
         STDERR,
         "Szukaj w Archiwach browser diagnostics enabled: {$browserDebugDir}\n"
-        . "Browser sessions and manifests will be recorded for this command.\n",
+        . "Browser diagnostic JSON manifests will be written for this command.\n",
     );
 }
 
